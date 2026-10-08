@@ -13,6 +13,8 @@ rm -rf build && mkdir build
 # Linux/arm64 wheels for the Lambda runtime, regardless of the local machine.
 python3 -m pip install -q -r requirements.txt -t build \
   --platform manylinux2014_aarch64 --implementation cp --python-version 3.14 --only-binary=:all:
+# The Lambda runtime already ships boto3/botocore; don't bundle a second copy.
+rm -rf build/{boto3,botocore,s3transfer,jmespath}{,-*.dist-info}
 cp src/*.py build/
 
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
@@ -25,3 +27,9 @@ aws cloudformation package --region "$REGION" --template-file template.yaml \
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file build/packaged.yaml --capabilities CAPABILITY_IAM \
   ${1:+--parameter-overrides "$@"}
+
+# Keep only the zip the stack now points at; older ones are never needed again.
+KEY=$(awk '/S3Key:/ {print $2; exit}' build/packaged.yaml)
+for OLD in $(aws s3api list-objects-v2 --bucket "$BUCKET" --query 'Contents[].Key' --output text); do
+  [ "$OLD" = "$KEY" ] || [ "$OLD" = None ] || aws s3 rm --quiet "s3://$BUCKET/$OLD"
+done
