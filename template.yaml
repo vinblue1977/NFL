@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: NFL Pick'em - emails weekly picks with confidence points (Thursday + Sunday), regular season only.
+
+Parameters:
+  RecipientEmail:
+    Type: String
+    Default: vinod.saravana@gmail.com
+  SenderEmail:
+    Type: String
+    Default: vinod.saravana@gmail.com
+    Description: Must be verified in SES (this stack creates the identity; click the link AWS emails you).
+  CreateSenderIdentity:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Set false if the sender address is already a verified SES identity in this region.
+  UseAI:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: false = free spread-based picks, no Bedrock calls.
+  ModelId:
+    Type: String
+    AllowedValues:
+      - anthropic.claude-opus-5-5
+      - anthropic.claude-sonnet-5-5
+      - anthropic.claude-haiku-5-5
+    Default: anthropic.claude-opus-5-5
+  Effort:
+    Type: String
+    AllowedValues: [low, medium, high]
+    Default: medium
+  ThursdaySchedule:
+    Type: String
+    Default: cron(0 10 ? * THU *)
+    Description: Central time. Thursday game only.
+  SundaySchedule:
+    Type: String
+    Default: cron(0 7 ? * SUN *)
+    Description: Central time. All remaining games (Sunday + Monday). 7am beats the 8:30am CT London kickoffs.
+
+Conditions:
+  MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]
+  RecipientDiffers: !Not [!Equals [!Ref RecipientEmail, !Ref SenderEmail]]
+  MakeRecipientIdentity: !And [!Condition MakeSenderIdentity, !Condition RecipientDiffers]
+
+Resources:
+  SenderIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: MakeSenderIdentity
+    Properties:
+      EmailIdentity: !Ref SenderEmail
+
+  # SES sandbox accounts can only send to verified addresses.
+  RecipientIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: MakeRecipientIdentity
+    Properties:
+      EmailIdentity: !Ref RecipientEmail
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: pickem
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: bedrock-mantle:CreateInference
+                Resource: "*"
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter]
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/*
+
+  PickemFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nfl-pickem
+      Runtime: python3.14
+      Architectures: [arm64]
+      Handler: app.handler
+      Code: build/
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 600
+      MemorySize: 512
+      Environment:
+        Variables:
+          RECIPIENT_EMAIL: !Ref RecipientEmail
+          SENDER_EMAIL: !Ref SenderEmail
+          USE_AI: !Ref UseAI
+          MODEL_ID: !Ref ModelId
+          EFFORT: !Ref Effort
+          STATE_PARAM_PREFIX: /nfl-pickem/locked
+
+  FunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/nfl-pickem
+      RetentionInDays: 30
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt PickemFunction.Arn
+
+  ThursdayRun:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-pickem-thursday
+      ScheduleExpression: !Ref ThursdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt PickemFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "thursday"}'
+
+  SundayRun:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-pickem-sunday
+      ScheduleExpression: !Ref SundaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt PickemFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "sunday"}'
+
+Outputs:
+  FunctionName:
+    Value: !Ref PickemFunction
