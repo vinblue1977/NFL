@@ -36,8 +36,8 @@ Parameters:
     Description: Central time. Thursday game only.
   SundaySchedule:
     Type: String
-    Default: cron(0 7 ? * SUN *)
-    Description: Central time. All remaining games (Sunday + Monday). 7am beats the 8:30am CT London kickoffs.
+    Default: cron(0 6 ? * SUN *)
+    Description: Central time. All remaining games (Sunday + Monday). 6am beats the 8:30am CT London kickoffs.
 
 Conditions:
   MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]
