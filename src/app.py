@@ -10,7 +10,10 @@ each value 1..N is used exactly once.
 
 import json
 import logging
+import math
 import os
+import statistics
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,8 +25,15 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+KALSHI = "https://api.elections.kalshi.com/trade-api/v2/markets"
+KALSHI_CODES = {"WSH": "WAS", "JAX": "JAC"}  # ESPN abbreviation -> Kalshi ticker code
+MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
+ODDS_API = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
+UA = {"User-Agent": "nfl-pickem-lambda"}
+NFL_MARGIN_SD = 13.5  # std dev of NFL final margin vs. the spread, for spread -> win prob
 REGULAR_SEASON = 2  # ESPN season types: 1 preseason, 2 regular, 3 postseason
 CENTRAL = ZoneInfo("America/Chicago")
+EASTERN = ZoneInfo("America/New_York")
 
 RECIPIENT = os.environ["RECIPIENT_EMAIL"]
 SENDER = os.environ["SENDER_EMAIL"]
@@ -31,6 +41,7 @@ USE_AI = os.environ.get("USE_AI", "true").lower() == "true"
 MODEL_ID = os.environ.get("MODEL_ID", "anthropic.claude-opus-5-5")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
+ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
 
 ssm = boto3.client("ssm")
@@ -40,7 +51,7 @@ ses = boto3.client("sesv2")
 # ---------------------------------------------------------------- ESPN data
 
 def fetch(path):
-    req = urllib.request.Request(f"{ESPN}/{path}", headers={"User-Agent": "nfl-pickem-lambda"})
+    req = urllib.request.Request(f"{ESPN}/{path}", headers=UA)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)
 
@@ -143,6 +154,121 @@ def recent_news(days=5):
     return out
 
 
+# ------------------------------------------------------ betting markets
+
+def kalshi_markets():
+    markets, cursor = [], ""
+    while True:
+        query = urllib.parse.urlencode({"series_ticker": "KXNFLGAME", "status": "open",
+                                        "limit": 200, "cursor": cursor})
+        req = urllib.request.Request(f"{KALSHI}?{query}", headers=UA)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            page = json.load(resp)
+        markets += page.get("markets", [])
+        cursor = page.get("cursor")
+        if not cursor:
+            return markets
+
+
+def add_kalshi(games):
+    """Attach Kalshi's game-winner market price as home_prob. Returns games matched.
+
+    Each game is an event KXNFLGAME-<yyMONdd ET><away><home> with one
+    "<team> wins" market per side; the price midpoint is that side's probability.
+    """
+    quotes = {}
+    for m in kalshi_markets():
+        try:
+            bid, ask = float(m["yes_bid_dollars"]), float(m["yes_ask_dollars"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 < bid <= ask and ask - bid <= 0.10:  # skip thin markets
+            quotes[m["ticker"]] = (bid + ask) / 2
+
+    matched = 0
+    for g in games:
+        if "home_prob" in g:
+            continue
+        day = g["kickoff"].astimezone(EASTERN)
+        home, away = (KALSHI_CODES.get(g[s], g[s]) for s in ("home", "away"))
+        event = f"KXNFLGAME-{day:%y}{MONTHS[day.month - 1]}{day:%d}{away}{home}"
+        h, a = quotes.get(f"{event}-{home}"), quotes.get(f"{event}-{away}")
+        if h is None or a is None:
+            continue
+        g["home_prob"] = h / (h + a)
+        g["prob_source"] = "Kalshi market"
+        matched += 1
+    return matched
+
+
+def odds_api_key():
+    try:
+        return ssm.get_parameter(Name=ODDS_KEY_PARAM, WithDecryption=True)["Parameter"]["Value"]
+    except ssm.exceptions.ParameterNotFound:
+        return None
+
+
+def implied(american):
+    return 100 / (american + 100) if american > 0 else -american / (100 - american)
+
+
+def add_consensus(games, key):
+    """Attach the multi-sportsbook consensus from The Odds API to games without a price yet.
+
+    home_prob is the no-vig moneyline win probability averaged across books;
+    the line becomes the median spread. Returns the number of games matched.
+    """
+    query = urllib.parse.urlencode({"apiKey": key, "regions": "us", "markets": "h2h,spreads",
+                                    "oddsFormat": "american"})
+    req = urllib.request.Request(f"{ODDS_API}?{query}", headers=UA)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        log.info("odds api credits remaining: %s", resp.headers.get("x-requests-remaining"))
+        events = json.load(resp)
+
+    matched = 0
+    for g in games:
+        if "home_prob" in g:
+            continue
+        home, away = g["home_name"], g["away_name"]
+        ev = next((e for e in events if e["home_team"] == home and e["away_team"] == away
+                   and abs(datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00"))
+                           - g["kickoff"]) < timedelta(hours=12)), None)
+        if not ev:
+            continue
+        probs, points = [], []
+        for book in ev.get("bookmakers", []):
+            for market in book.get("markets", []):
+                out = {o["name"]: o for o in market.get("outcomes", [])}
+                if home not in out or away not in out:
+                    continue
+                if market["key"] == "h2h":
+                    h, a = implied(out[home]["price"]), implied(out[away]["price"])
+                    probs.append(h / (h + a))
+                elif market["key"] == "spreads" and "point" in out[home]:
+                    points.append(out[home]["point"])
+        if not probs:
+            continue
+        g["home_prob"] = sum(probs) / len(probs)
+        g["prob_source"] = f"consensus of {len(probs)} sportsbooks"
+        if points:
+            spread = statistics.median(points)  # from the home side, negative = home favored
+            g["fav"] = g["home"] if spread < 0 else g["away"] if spread > 0 else None
+            g["fav_by"] = abs(spread)
+            g["line"] = f"{g['fav']} {-abs(spread):g}" if g["fav"] else "PK"
+        matched += 1
+    return matched
+
+
+def home_win_prob(g):
+    """Market win probability, else estimated from the ESPN spread."""
+    if "home_prob" in g:
+        return g["home_prob"]
+    if not g["fav"]:
+        return 0.5
+    fav_p = 0.5 * (1 + math.erf(g["fav_by"] / (NFL_MARGIN_SD * math.sqrt(2))))
+    return fav_p if g["fav"] == g["home"] else 1 - fav_p
+
+
 # ---------------------------------------------------------- locked state
 
 def state_name(season, week):
@@ -177,12 +303,22 @@ class PickSheet(BaseModel):
 
 
 def spread_picks(games, values):
-    """No-AI picks: take the favorite, more points on bigger spreads."""
-    ranked = sorted(games, key=lambda g: g["fav_by"])  # smallest spread -> fewest points
+    """No-AI picks: take the likelier winner, more points on bigger favorites."""
+    def pick_prob(g):
+        p = home_win_prob(g)
+        return max(p, 1 - p)
+
+    ranked = sorted(games, key=pick_prob)  # closest game -> fewest points
     picks = []
     for g, pts in zip(ranked, sorted(values)):
-        winner = g["fav"] or g["home"]  # no line -> home team
-        why = f"Favored by {g['fav_by']:g}" if g["fav"] else "No line posted; home team"
+        p = home_win_prob(g)
+        winner = g["home"] if p >= 0.5 else g["away"]  # dead even -> home team
+        if "prob_source" in g:
+            why = f"{max(p, 1 - p):.0%} to win ({g['prob_source']})"
+        elif g["fav"]:
+            why = f"Favored by {g['fav_by']:g} (ESPN line)"
+        else:
+            why = "No line posted; home team"
         picks.append(Pick(game_id=g["id"], winner=winner, confidence=pts, reasoning=why))
     return picks
 
@@ -203,6 +339,7 @@ def build_prompt(games, values, injuries, transactions, news, locked_note):
             f"- game_id={g['id']}: {g['away_name']} ({g['away']}, {g['away_record']}) at "
             f"{g['home_name']} ({g['home']}, {g['home_record']}); kickoff {g['kickoff_ct']:%a %m/%d %I:%M %p} CT; "
             f"line {g['line']}; O/U {g['over_under']}"
+            + (f"; {g['prob_source']}: {g['home']} {g['home_prob']:.0%} to win" if "home_prob" in g else "")
         )
     lines.append("\nINJURY REPORT (non-active designations):")
     for team, items in injuries.items():
@@ -332,6 +469,24 @@ def handler(event, context):
     locked = load_locked(season, week)
     notes = []
 
+    # Win probabilities: Kalshi first, then The Odds API (if a key is set), else ESPN's line.
+    unplayed = [g for g in games if not g["started"]]
+    try:
+        add_kalshi(unplayed)
+    except Exception as exc:  # market outage still gets an email
+        log.exception("kalshi failed")
+        notes.append(f"Kalshi failed ({type(exc).__name__}: {exc}).")
+    key = odds_api_key()
+    if key and any("home_prob" not in g for g in unplayed):
+        try:
+            add_consensus(unplayed, key)
+        except Exception as exc:
+            log.exception("odds api failed")
+            notes.append(f"Odds API failed ({type(exc).__name__}: {exc}).")
+    no_market = [f"{g['away']}@{g['home']}" for g in unplayed if "home_prob" not in g]
+    if no_market:
+        notes.append(f"No market price for {', '.join(no_market)}; used the ESPN line.")
+
     if run == "thursday":
         targets = [g for g in games if g["kickoff_ct"].weekday() == 3
                    and not g["started"] and g["id"] not in locked]
@@ -370,7 +525,7 @@ def handler(event, context):
             notes.append(f"AI picks failed ({type(exc).__name__}: {exc}); used spread-based picks instead.")
     else:
         picks = spread_picks(pool, available)
-        notes.append("Spread-based picks (AI off).")
+        notes.append("Picks from betting odds (AI off).")
 
     target_ids = {g["id"] for g in targets}
     picks = [p for p in picks if p.game_id in target_ids]

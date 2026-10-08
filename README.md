@@ -6,9 +6,19 @@ Preseason and playoff runs exit without sending (based on ESPN's season type):
 - **Thursday 10:00 CT**: Thursday game only. Its points are saved in SSM (`/nfl-pickem/locked/<season>-w<week>`).
 - **Sunday 07:00 CT**: every game that hasn't started, using the leftover points.
 
-Data comes from ESPN's public API (lines, injuries, transactions, news). With `UseAI=true`,
-Claude on Amazon Bedrock makes the picks; otherwise, or if the AI call fails,
-it picks the favorite and gives more points to bigger spreads.
+Schedule, injuries, transactions and news come from ESPN's public API. Win probabilities come from
+[Kalshi](https://kalshi.com)'s public NFL game-winner markets (price midpoint, no key needed). Games
+Kalshi doesn't price fall back to [The Odds API](https://the-odds-api.com) consensus (no-vig moneyline
+averaged across US sportsbooks) if a key is set, then to ESPN's line. The email notes any fallback.
+With `UseAI=true`, Claude on Amazon Bedrock makes the picks; otherwise, or if the AI call fails,
+it picks the likelier winner and gives more points to bigger favorites.
+
+Optional Odds API key (each call uses 2 credits of the free plan's monthly quota):
+
+```bash
+aws ssm put-parameter --region us-east-2 --name /nfl-pickem/odds-api-key \
+  --type SecureString --value '<your key>' --overwrite
+```
 
 ## Deploy
 

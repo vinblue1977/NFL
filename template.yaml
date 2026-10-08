@@ -103,6 +103,7 @@ Resources:
           MODEL_ID: !Ref ModelId
           EFFORT: !Ref Effort
           STATE_PARAM_PREFIX: /nfl-pickem/locked
+          ODDS_API_KEY_PARAM: /nfl-pickem/odds-api-key
 
   FunctionLogs:
     Type: AWS::Logs::LogGroup
