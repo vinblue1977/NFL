@@ -3,7 +3,7 @@
 Emails pick'em picks with confidence points (1..N, each used once per week), during the regular season only.
 Preseason and playoff runs exit without sending (based on ESPN's season type):
 
-- **Thursday 10:00 CT**: Thursday game only. Its points are saved in SSM (`/nfl-pickem/locked/<season>-w<week>`).
+- **Thursday 08:45 CT**: Thursday game only. Its points are saved in SSM (`/nfl-pickem/locked/<season>-w<week>`).
 - **Sunday 06:00 CT**: every game that hasn't started, using the leftover points.
 
 Schedule, injuries, transactions and news come from ESPN's public API. Win probabilities come from
