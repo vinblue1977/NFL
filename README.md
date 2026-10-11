@@ -3,7 +3,7 @@
 Emails pick'em picks with confidence points (1..N, each used once per week), during the regular season only.
 Preseason and playoff runs exit without sending (based on ESPN's season type):
 
-- **Thursday 08:45 CT**: Thursday game only. Its points are saved in SSM (`/nfl-pickem/locked/<season>-w<week>`).
+- **Thursday 08:00 CT**: Thursday game only. Its points are saved in SSM (`/nfl-pickem/locked/<season>-w<week>`).
 - **Sunday 06:00 CT**: every game that hasn't started, using the leftover points.
 
 Schedule, injuries, transactions and news come from ESPN's public API. Win probabilities come from
@@ -25,7 +25,7 @@ aws ssm put-parameter --region us-east-2 --name /nfl-pickem/odds-api-key \
 A second function (`nfl-fantasy-lineup`) emails start/sit moves for my ESPN fantasy team
 (league `410405345`, param `LeagueId`):
 
-- **Thursday 08:45 CT**: decisions for players in the Thursday game (rest is a preview).
+- **Thursday 08:00 CT**: decisions for players in the Thursday game (rest is a preview).
 - **Saturday 09:00 CT**: full preview after Friday injury reports.
 - **Sunday 10:45 CT**: final lineup after noon-game inactives (London-game players are already locked by then).
 

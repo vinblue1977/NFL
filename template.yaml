@@ -31,7 +31,7 @@ Parameters:
     Default: medium
   ThursdaySchedule:
     Type: String
-    Default: cron(45 8 ? * THU *)
+    Default: cron(0 8 ? * THU *)
     Description: Central time. Thursday game only.
   SundaySchedule:
     Type: String
@@ -52,7 +52,7 @@ Parameters:
     Description: true = Claude reviews close start/sit calls; false = ESPN projections only.
   ThursdayLineupSchedule:
     Type: String
-    Default: cron(45 8 ? * THU *)
+    Default: cron(0 8 ? * THU *)
     Description: Central time. Start/sit for Thursday-game players.
   SaturdayLineupSchedule:
     Type: String
