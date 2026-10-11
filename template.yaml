@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: NFL Pick'em - emails weekly picks with confidence points (Thursday + Sunday), regular season only.
+Description: NFL Pick'em picks (Thursday + Sunday) and fantasy start/sit lineup (Thursday + Saturday + Sunday) emails, regular season only.
 
 Parameters:
   RecipientEmail:
@@ -22,10 +22,9 @@ Parameters:
   ModelId:
     Type: String
     AllowedValues:
-      - anthropic.claude-opus-5-5
-      - anthropic.claude-sonnet-5-5
-      - anthropic.claude-haiku-5-5
-    Default: anthropic.claude-opus-5-5
+      - us.anthropic.claude-opus-4-6-v1
+    Default: us.anthropic.claude-opus-4-6-v1
+    Description: Bedrock inference profile; the account has a model agreement for this one.
   Effort:
     Type: String
     AllowedValues: [low, medium, high]
@@ -38,6 +37,31 @@ Parameters:
     Type: String
     Default: cron(0 6 ? * SUN *)
     Description: Central time. All remaining games (Sunday + Monday). 6am beats the 8:30am CT London kickoffs.
+  LeagueId:
+    Type: String
+    Default: "410405345"
+    Description: ESPN fantasy league ID. espn_s2/SWID cookies go in SSM /nfl-pickem/espn-s2 and /nfl-pickem/espn-swid.
+  TeamId:
+    Type: String
+    Default: ""
+    Description: ESPN fantasy team ID. Empty = the team owned by the SWID.
+  LineupUseAI:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: true = Claude reviews close start/sit calls; false = ESPN projections only.
+  ThursdayLineupSchedule:
+    Type: String
+    Default: cron(45 8 ? * THU *)
+    Description: Central time. Start/sit for Thursday-game players.
+  SaturdayLineupSchedule:
+    Type: String
+    Default: cron(0 9 ? * SAT *)
+    Description: Central time. Full lineup preview after Friday injury reports.
+  SundayLineupSchedule:
+    Type: String
+    Default: cron(45 10 ? * SUN *)
+    Description: Central time. Final lineup, after noon-game inactives are out.
 
 Conditions:
   MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]
@@ -75,8 +99,10 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: bedrock-mantle:CreateInference
-                Resource: "*"
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-*
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-*
               - Effect: Allow
                 Action: ses:SendEmail
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
@@ -111,6 +137,35 @@ Resources:
       LogGroupName: /aws/lambda/nfl-pickem
       RetentionInDays: 30
 
+  LineupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nfl-fantasy-lineup
+      Runtime: python3.14
+      Architectures: [arm64]
+      Handler: lineup.handler
+      Code: build/
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 600
+      MemorySize: 512
+      Environment:
+        Variables:
+          RECIPIENT_EMAIL: !Ref RecipientEmail
+          SENDER_EMAIL: !Ref SenderEmail
+          MODEL_ID: !Ref ModelId
+          EFFORT: !Ref Effort
+          LEAGUE_ID: !Ref LeagueId
+          TEAM_ID: !Ref TeamId
+          LINEUP_USE_AI: !Ref LineupUseAI
+          ESPN_S2_PARAM: /nfl-pickem/espn-s2
+          ESPN_SWID_PARAM: /nfl-pickem/espn-swid
+
+  LineupLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/nfl-fantasy-lineup
+      RetentionInDays: 30
+
   SchedulerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -127,7 +182,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: lambda:InvokeFunction
-                Resource: !GetAtt PickemFunction.Arn
+                Resource:
+                  - !GetAtt PickemFunction.Arn
+                  - !GetAtt LineupFunction.Arn
 
   ThursdayRun:
     Type: AWS::Scheduler::Schedule
@@ -153,6 +210,44 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "sunday"}'
 
+  ThursdayLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-thursday
+      ScheduleExpression: !Ref ThursdayLineupSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "thursday"}'
+
+  SaturdayLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-saturday
+      ScheduleExpression: !Ref SaturdayLineupSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "saturday"}'
+
+  SundayLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-sunday
+      ScheduleExpression: !Ref SundayLineupSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "sunday"}'
+
 Outputs:
   FunctionName:
     Value: !Ref PickemFunction
+  LineupFunctionName:
+    Value: !Ref LineupFunction

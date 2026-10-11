@@ -38,7 +38,7 @@ EASTERN = ZoneInfo("America/New_York")
 RECIPIENT = os.environ["RECIPIENT_EMAIL"]
 SENDER = os.environ["SENDER_EMAIL"]
 USE_AI = os.environ.get("USE_AI", "true").lower() == "true"
-MODEL_ID = os.environ.get("MODEL_ID", "anthropic.claude-opus-5-5")
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
@@ -87,6 +87,8 @@ def parse_games(scoreboard):
             "started": status.get("state") != "pre",
             "home": home["team"]["abbreviation"],
             "away": away["team"]["abbreviation"],
+            "home_id": int(home["team"]["id"]),
+            "away_id": int(away["team"]["id"]),
             "home_name": home["team"]["displayName"],
             "away_name": away["team"]["displayName"],
             "home_record": (home.get("records") or [{}])[0].get("summary", ""),
@@ -355,34 +357,40 @@ def build_prompt(games, values, injuries, transactions, news, locked_note):
     return "\n".join(lines)
 
 
-def ai_picks(games, values, locked_note):
-    from anthropic import AnthropicBedrockMantle
+def claude_tool_call(prompt, tool_name, description, schema):
+    """Ask Claude on Bedrock to answer by calling one tool; returns the tool input.
 
-    teams = {g["home"] for g in games} | {g["away"] for g in games}
-    prompt = build_prompt(games, values, injuries_by_team(teams),
-                          recent_transactions(teams), recent_news(), locked_note)
+    Bedrock doesn't support structured outputs, so the answer comes back as the
+    input of a tool call and the caller validates it.
+    """
+    from anthropic import AnthropicBedrock
 
-    # Bedrock doesn't support structured outputs, so the sheet comes back as the
-    # input of a tool call and is validated with pydantic here.
-    client = AnthropicBedrockMantle(aws_region=REGION)
+    client = AnthropicBedrock(aws_region=REGION)
     response = client.messages.create(
         model=MODEL_ID,
         max_tokens=16000,
+        thinking={"type": "adaptive"},
         output_config={"effort": EFFORT},
-        tools=[{
-            "name": "submit_picks",
-            "description": "Submit the finished pick sheet: one pick per game plus a short summary.",
-            "input_schema": PickSheet.model_json_schema(),
-        }],
-        messages=[{"role": "user", "content": prompt + "\n\nSubmit your picks by calling submit_picks."}],
+        tools=[{"name": tool_name, "description": description, "input_schema": schema}],
+        messages=[{"role": "user", "content": f"{prompt}\n\nSubmit your answer by calling {tool_name}."}],
     )
     log.info("usage: %s", response.usage)
     if response.stop_reason == "refusal":
         raise RuntimeError("model declined the request")
-    call = next((b for b in response.content if b.type == "tool_use" and b.name == "submit_picks"), None)
+    call = next((b for b in response.content if b.type == "tool_use" and b.name == tool_name), None)
     if call is None:
-        raise RuntimeError(f"model did not submit picks (stop_reason={response.stop_reason})")
-    sheet = PickSheet.model_validate(call.input)
+        raise RuntimeError(f"model did not call {tool_name} (stop_reason={response.stop_reason})")
+    return call.input
+
+
+def ai_picks(games, values, locked_note):
+    teams = {g["home"] for g in games} | {g["away"] for g in games}
+    prompt = build_prompt(games, values, injuries_by_team(teams),
+                          recent_transactions(teams), recent_news(), locked_note)
+    sheet = PickSheet.model_validate(claude_tool_call(
+        prompt, "submit_picks",
+        "Submit the finished pick sheet: one pick per game plus a short summary.",
+        PickSheet.model_json_schema()))
     return normalize(sheet.picks, games, values), sheet.summary
 
 
