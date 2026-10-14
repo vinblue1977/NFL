@@ -246,6 +246,26 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "sunday"}'
 
+  # Plain-text "it failed" email through the Comed SNS topic, which doesn't depend on SES.
+  LineupErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: nfl-fantasy-lineup-errors
+      AlarmDescription: The fantasy lineup run failed, so no lineup email went out. Check the nfl-fantasy-lineup logs; expired ESPN cookies are the usual cause.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LineupFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
+
 Outputs:
   FunctionName:
     Value: !Ref PickemFunction
