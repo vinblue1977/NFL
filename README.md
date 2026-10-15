@@ -35,6 +35,12 @@ highest projections. With `LineupUseAI=true`, Claude reviews close calls (bench 
 starter, or an injury-tagged starter) and explains them; an invalid or failed AI answer falls back to
 the projection lineup. The email lists the moves vs. the current ESPN lineup.
 
+Every lineup email also suggests up to 3 free-agent pickups (add/drop). It ranks the league's free agents
+and waiver players by ESPN's rest-of-season projection, takes the best few per position, and pulls the last
+two weeks of Rotowire news (ESPN fantasy player news) for them and for my roster. With `LineupUseAI=true`,
+Claude picks the moves from the projections, news and bye weeks; otherwise, or if the AI answer fails
+validation, it suggests same-position swaps that gain at least 15 projected rest-of-season points.
+
 One-time setup (private league): copy the `espn_s2` and `SWID` cookies from your browser while
 logged in to fantasy.espn.com (DevTools > Application > Cookies), then:
 
