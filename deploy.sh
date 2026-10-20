@@ -20,6 +20,9 @@ cp src/*.py build/
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
   aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
     --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
+# The bucket lives outside the stack, so it needs its own tag (also fixes buckets created before tagging).
+aws s3api put-bucket-tagging --bucket "$BUCKET" \
+  --tagging 'TagSet=[{Key=project,Value=nfl-pickem}]'
 
 aws cloudformation package --region "$REGION" --template-file template.yaml \
   --s3-bucket "$BUCKET" --output-template-file build/packaged.yaml >/dev/null
