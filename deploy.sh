@@ -26,6 +26,7 @@ aws cloudformation package --region "$REGION" --template-file template.yaml \
 
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file build/packaged.yaml --capabilities CAPABILITY_IAM \
+  --tags project=nfl-pickem \
   ${1:+--parameter-overrides "$@"}
 
 # Keep only the zip the stack now points at; older ones are never needed again.
