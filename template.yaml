@@ -62,10 +62,26 @@ Parameters:
     Type: String
     Default: cron(45 10 ? * SUN *)
     Description: Central time. Final lineup, after noon-game inactives are out.
-  LateAlertSchedules:
-    Type: CommaDelimitedList
-    Default: cron(0 6 ? * SUN *),cron(0 14 ? * SUN *),cron(30 17 ? * MON *)
-    Description: Central time. Re-check the lineup before morning games (international), late Sunday games and Monday night; does nothing unless a game kicks off within 2 hours, and emails only if a change is needed.
+  AlertThursdaySchedule:
+    Type: String
+    Default: cron(0 17 ? * THU *)
+    Description: Central time. Thursday night inactives (about 90 minutes before kickoff).
+  AlertSundayMorningSchedule:
+    Type: String
+    Default: cron(0 6 ? * SUN *)
+    Description: Central time. International morning games.
+  AlertSundayAfternoonSchedule:
+    Type: String
+    Default: cron(0 14 ? * SUN *)
+    Description: Central time. Late-window games.
+  AlertSundayNightSchedule:
+    Type: String
+    Default: cron(0 17 ? * SUN *)
+    Description: Central time. Sunday night game.
+  AlertMondaySchedule:
+    Type: String
+    Default: cron(30 17 ? * MON *)
+    Description: Central time. Monday night game.
   WaiverSchedule:
     Type: String
     Default: cron(0 8 ? * TUE *)
@@ -254,11 +270,23 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "sunday"}'
 
+  AlertThursday:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-thursday
+      ScheduleExpression: !Ref AlertThursdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
   AlertSundayMorning:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-sunday-morning
-      ScheduleExpression: !Select [0, !Ref LateAlertSchedules]
+      ScheduleExpression: !Ref AlertSundayMorningSchedule
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
@@ -266,11 +294,11 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  LateAlertSunday:
+  AlertSundayAfternoon:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-sunday
-      ScheduleExpression: !Select [1, !Ref LateAlertSchedules]
+      ScheduleExpression: !Ref AlertSundayAfternoonSchedule
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
@@ -278,11 +306,23 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  LateAlertMonday:
+  AlertSundayNight:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-sunday-night
+      ScheduleExpression: !Ref AlertSundayNightSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertMonday:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-monday
-      ScheduleExpression: !Select [2, !Ref LateAlertSchedules]
+      ScheduleExpression: !Ref AlertMondaySchedule
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:

@@ -21,13 +21,27 @@ import json
 import os
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import cache
 
 from pydantic import BaseModel
 
-from app import (CENTRAL, RECIPIENT, REGULAR_SEASON, SENDER, UA, MODEL_ID, claude_tool_call,
-                 fetch, injuries_by_team, log, parse_games, recent_news, ses, ssm)
+from app import (
+    CENTRAL,
+    MODEL_ID,
+    RECIPIENT,
+    REGULAR_SEASON,
+    SENDER,
+    UA,
+    claude_tool_call,
+    fetch,
+    injuries_by_team,
+    log,
+    parse_games,
+    recent_news,
+    ses,
+    ssm,
+)
 
 FANTASY = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons"
 PLAYER_NEWS = "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
@@ -38,10 +52,10 @@ S2_PARAM = os.environ.get("ESPN_S2_PARAM", "/nfl-pickem/espn-s2")
 SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
 ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
+RUNS = {"thursday", "saturday", "sunday", "alert", "waivers"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
-SLOTS = {0: "QB", 1: "TQB", 2: "RB", 3: "RB/WR", 4: "WR", 5: "WR/TE", 6: "TE", 7: "OP",
-         16: "D/ST", 17: "K", 23: "FLEX"}
+SLOTS = {0: "QB", 1: "TQB", 2: "RB", 3: "RB/WR", 4: "WR", 5: "WR/TE", 6: "TE", 7: "OP", 16: "D/ST", 17: "K", 23: "FLEX"}
 BENCH, IR = 20, 21
 # Statuses that mean the player won't (or very likely won't) play.
 SIT_STATUSES = {"OUT", "INJURY_RESERVE", "SUSPENSION", "DOUBTFUL"}
@@ -55,6 +69,7 @@ HEALTHY = {"ACTIVE", "NORMAL", "QUESTIONABLE", "DAY_TO_DAY"}
 
 
 # ---------------------------------------------------------------- ESPN league
+
 
 @cache
 def secret(name):
@@ -71,8 +86,7 @@ def fantasy_get(path, player_filter=None):
 
 
 def fetch_league(season, week):
-    league = fantasy_get(f"{season}/segments/0/leagues/{LEAGUE_ID}"
-                         f"?view=mTeam&view=mRoster&view=mSettings&scoringPeriodId={week}")
+    league = fantasy_get(f"{season}/segments/0/leagues/{LEAGUE_ID}?view=mTeam&view=mRoster&view=mSettings&scoringPeriodId={week}")
     return league, secret(SWID_PARAM)
 
 
@@ -106,27 +120,33 @@ def players(team, games, week):
     out = []
     for entry in team["roster"]["entries"]:
         p = entry["playerPoolEntry"]["player"]
-        proj = next((s.get("appliedTotal", 0.0) for s in p.get("stats", [])
-                     if s.get("scoringPeriodId") == week and s.get("statSourceId") == 1
-                     and s.get("statSplitTypeId") == 1), None)
+        proj = next(
+            (
+                s.get("appliedTotal", 0.0)
+                for s in p.get("stats", [])
+                if s.get("scoringPeriodId") == week and s.get("statSourceId") == 1 and s.get("statSplitTypeId") == 1
+            ),
+            None,
+        )
         game, opp, where = by_team.get(p.get("proTeamId"), (None, None, None))
         status = p.get("injuryStatus") or "ACTIVE"
         if entry["lineupSlotId"] == IR:
             status = "INJURY_RESERVE"
-        out.append({
-            "id": entry["playerId"],
-            "name": p["fullName"],
-            "pos": POSITIONS.get(p.get("defaultPositionId"), "?"),
-            "eligible": set(p.get("eligibleSlots", [])),
-            "slot": entry["lineupSlotId"],
-            "status": status,
-            "proj": proj or 0.0,
-            "game": game,
-            "team": (game["home"] if game and game["home_id"] == p.get("proTeamId") else
-                     game["away"]) if game else "",
-            "opp": f"{where} {opp}" if game else "BYE",
-            "locked": bool(game and game["started"]),
-        })
+        out.append(
+            {
+                "id": entry["playerId"],
+                "name": p["fullName"],
+                "pos": POSITIONS.get(p.get("defaultPositionId"), "?"),
+                "eligible": set(p.get("eligibleSlots", [])),
+                "slot": entry["lineupSlotId"],
+                "status": status,
+                "proj": proj or 0.0,
+                "game": game,
+                "team": (game["home"] if game and game["home_id"] == p.get("proTeamId") else game["away"]) if game else "",
+                "opp": f"{where} {opp}" if game else "BYE",
+                "locked": bool(game and game["started"]),
+            }
+        )
     return out
 
 
@@ -135,6 +155,7 @@ def playable(p):
 
 
 # ---------------------------------------------------------------- lineup
+
 
 def best_lineup(roster, slots):
     """Assign the highest projections to starting slots.
@@ -182,8 +203,13 @@ def close_calls(roster, lineup, slots):
         if p["status"] not in ("ACTIVE", "NORMAL"):
             calls.append(f"{p['name']} ({label}) is {p['status'].lower()}")
         for b in roster:
-            if (b["id"] not in starters and not b["locked"] and playable(b)
-                    and slot_of[label] in b["eligible"] and p["proj"] - b["proj"] <= CLOSE_CALL):
+            if (
+                b["id"] not in starters
+                and not b["locked"]
+                and playable(b)
+                and slot_of[label] in b["eligible"]
+                and p["proj"] - b["proj"] <= CLOSE_CALL
+            ):
                 calls.append(f"{label}: {p['name']} {p['proj']:.1f} vs {b['name']} {b['proj']:.1f}")
     return calls
 
@@ -206,12 +232,13 @@ class LineupSheet(BaseModel):
 
 def describe(p):
     g = p["game"]
-    game = (f"{p['opp']}, {g['kickoff_ct']:%a %I:%M %p} CT, line {g['line']}, O/U {g['over_under']}"
-            if g else "BYE")
+    game = f"{p['opp']}, {g['kickoff_ct']:%a %I:%M %p} CT, line {g['line']}, O/U {g['over_under']}" if g else "BYE"
     lock = ", GAME STARTED (can't move)" if p["locked"] else ""
-    return (f"- id={p['id']} {p['name']} {p['pos']} {p['team']} | proj {p['proj']:.1f} | "
-            f"{p['status'].lower()} | {game} | eligible: "
-            f"{', '.join(SLOTS[s] for s in sorted(p['eligible']) if s in SLOTS)}{lock}")
+    return (
+        f"- id={p['id']} {p['name']} {p['pos']} {p['team']} | proj {p['proj']:.1f} | "
+        f"{p['status'].lower()} | {game} | eligible: "
+        f"{', '.join(SLOTS[s] for s in sorted(p['eligible']) if s in SLOTS)}{lock}"
+    )
 
 
 def ai_lineup(roster, slots, proposed, calls):
@@ -227,19 +254,25 @@ def ai_lineup(roster, slots, proposed, calls):
         "start someone who is out or on bye, and keep players whose game started where they are.",
         "Give a short reason for every starter in a close call and every change you make.",
         "\nSLOTS: " + ", ".join(label for label, _ in slots),
-        "\nROSTER:", *[describe(p) for p in roster],
+        "\nROSTER:",
+        *[describe(p) for p in roster],
         "\nPROJECTION LINEUP:",
-        *[f"- {label}: {p['name']} (id={p['id']})" if p else f"- {label}: (empty)"
-          for label, p in proposed.items()],
-        "\nCLOSE CALLS:", *[f"- {c}" for c in calls],
+        *[f"- {label}: {p['name']} (id={p['id']})" if p else f"- {label}: (empty)" for label, p in proposed.items()],
+        "\nCLOSE CALLS:",
+        *[f"- {c}" for c in calls],
         "\nINJURY REPORTS FOR MY PLAYERS' TEAMS:",
         *[f"{t}: " + "; ".join(items) for t, items in injuries.items() if items],
-        "\nRECENT NFL NEWS:", *recent_news(),
+        "\nRECENT NFL NEWS:",
+        *recent_news(),
     ]
-    sheet = LineupSheet.model_validate(claude_tool_call(
-        "\n".join(lines), "submit_lineup",
-        "Submit the final lineup (slot label -> player id), reasons, and a short summary.",
-        LineupSheet.model_json_schema()))
+    sheet = LineupSheet.model_validate(
+        claude_tool_call(
+            "\n".join(lines),
+            "submit_lineup",
+            "Submit the final lineup (slot label -> player id), reasons, and a short summary.",
+            LineupSheet.model_json_schema(),
+        )
+    )
     return validate(sheet, roster, slots, proposed), {r.player_id: r.reason for r in sheet.reasons}, sheet.summary
 
 
@@ -267,15 +300,19 @@ def validate(sheet, roster, slots, proposed):
 
 # ---------------------------------------------------------------- pickups
 
+
 def fetch_free_agents(season, week):
-    player_filter = {"players": {
-        "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
-        "filterSlotIds": {"value": [0, 2, 4, 6, 16, 17]},  # QB, RB, WR, TE, D/ST, K
-        "limit": 300,
-        "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
-    }}
-    return fantasy_get(f"{season}/segments/0/leagues/{LEAGUE_ID}"
-                       f"?view=kona_player_info&scoringPeriodId={week}", player_filter)["players"]
+    player_filter = {
+        "players": {
+            "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
+            "filterSlotIds": {"value": [0, 2, 4, 6, 16, 17]},  # QB, RB, WR, TE, D/ST, K
+            "limit": 300,
+            "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
+        }
+    }
+    return fantasy_get(f"{season}/segments/0/leagues/{LEAGUE_ID}?view=kona_player_info&scoringPeriodId={week}", player_filter)[
+        "players"
+    ]
 
 
 def pro_teams(season):
@@ -286,9 +323,17 @@ def pro_teams(season):
 
 def season_stat(p, season, source, split, period=0):
     """source 0 = actual, 1 = projection; split 0 = season (rest of season for projections), 1 = week."""
-    return next((s for s in p.get("stats", []) if s.get("seasonId") == season
-                 and s.get("statSourceId") == source and s.get("statSplitTypeId") == split
-                 and s.get("scoringPeriodId") == period), {})
+    return next(
+        (
+            s
+            for s in p.get("stats", [])
+            if s.get("seasonId") == season
+            and s.get("statSourceId") == source
+            and s.get("statSplitTypeId") == split
+            and s.get("scoringPeriodId") == period
+        ),
+        {},
+    )
 
 
 def outlook(p, season, week, teams, started, availability=""):
@@ -314,7 +359,7 @@ def outlook(p, season, week, teams, started, availability=""):
 
 def player_news(player_id):
     """Recent Rotowire blurbs for a player (ESPN fantasy player news)."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=NEWS_DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=NEWS_DAYS)
     req = urllib.request.Request(f"{PLAYER_NEWS}?limit=10&playerId={player_id}", headers=UA)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -326,11 +371,16 @@ def player_news(player_id):
     for item in feed:
         try:
             when = datetime.fromisoformat(item["published"].replace("Z", "+00:00"))
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             continue
         if item.get("type") == "Rotowire" and when >= cutoff:
-            out.append({"when": f"{when:%m/%d}", "headline": item.get("headline", ""),
-                        "story": " ".join((item.get("story") or "").split())[:400]})
+            out.append(
+                {
+                    "when": f"{when:%m/%d}",
+                    "headline": item.get("headline", ""),
+                    "story": " ".join((item.get("story") or "").split())[:400],
+                }
+            )
         if len(out) == 3:
             break
     return out
@@ -368,10 +418,12 @@ class PickupSheet(BaseModel):
 
 def describe_outlook(p):
     where = {"FREEAGENT": "free agent", "WAIVERS": "on waivers (needs a claim)"}.get(p["availability"], "")
-    line = (f"- id={p['id']} {p['name']} {p['pos']} {p['team']} (bye wk {p['bye']}) | "
-            f"{p['status'].lower()} | this week {p['week']:.1f} | 2026 avg {p['avg']:.1f} | "
-            f"rest of season {p['ros']:.0f} ({p['ros_avg']:.1f}/g) | {p['owned']:.0f}% rostered in ESPN leagues"
-            + (f" | {where}" if where else ""))
+    line = (
+        f"- id={p['id']} {p['name']} {p['pos']} {p['team']} (bye wk {p['bye']}) | "
+        f"{p['status'].lower()} | this week {p['week']:.1f} | 2026 avg {p['avg']:.1f} | "
+        f"rest of season {p['ros']:.0f} ({p['ros_avg']:.1f}/g) | {p['owned']:.0f}% rostered in ESPN leagues"
+        + (f" | {where}" if where else "")
+    )
     return "\n".join([line] + [f"    news {n['when']} {n['headline']} {n['story']}" for n in p["news"]])
 
 
@@ -388,15 +440,21 @@ def ai_pickups(pool, mine, droppable, slots, week):
         "drop a player just because they're on bye or had one bad week. Mention when a player is on "
         "waivers (needs a claim) rather than a free agent.",
         "\nLINEUP SLOTS: " + ", ".join(label for label, _ in slots),
-        "\nMY ROSTER:", *[describe_outlook(p) for p in mine],
+        "\nMY ROSTER:",
+        *[describe_outlook(p) for p in mine],
         "\nDROPPABLE: " + ", ".join(f"{p['name']} (id={p['id']})" for p in droppable),
-        "\nBEST AVAILABLE PLAYERS:", *[describe_outlook(p) for p in pool],
+        "\nBEST AVAILABLE PLAYERS:",
+        *[describe_outlook(p) for p in pool],
     ]
-    sheet = PickupSheet.model_validate(claude_tool_call(
-        "\n".join(lines), "submit_pickups",
-        "Submit the pickups (add and drop player ids with their exact names as listed, a short "
-        "reason citing the news) and a one-paragraph summary.",
-        PickupSheet.model_json_schema()))
+    sheet = PickupSheet.model_validate(
+        claude_tool_call(
+            "\n".join(lines),
+            "submit_pickups",
+            "Submit the pickups (add and drop player ids with their exact names as listed, a short "
+            "reason citing the news) and a one-paragraph summary.",
+            PickupSheet.model_json_schema(),
+        )
+    )
     adds, drops = {p["id"]: p for p in pool}, {p["id"]: p for p in droppable}
     picks = sheet.pickups[:MAX_PICKUPS]
     for m in picks:
@@ -405,11 +463,9 @@ def ai_pickups(pool, mine, droppable, slots, week):
         if m.drop_player_id not in drops:
             raise ValueError(f"player {m.drop_player_id} isn't on my droppable list")
         # Catches an id that doesn't match the player the reason talks about.
-        if (adds[m.add_player_id]["name"] != m.add_player_name
-                or drops[m.drop_player_id]["name"] != m.drop_player_name):
+        if adds[m.add_player_id]["name"] != m.add_player_name or drops[m.drop_player_id]["name"] != m.drop_player_name:
             raise ValueError(f"ids don't match names ({m.add_player_name} / {m.drop_player_name})")
-    if (len({m.add_player_id for m in picks}) != len(picks)
-            or len({m.drop_player_id for m in picks}) != len(picks)):
+    if len({m.add_player_id for m in picks}) != len(picks) or len({m.drop_player_id for m in picks}) != len(picks):
         raise ValueError("a player is added or dropped twice")
     return [(adds[m.add_player_id], drops[m.drop_player_id], m.reason) for m in picks], sheet.summary
 
@@ -421,18 +477,16 @@ def suggest_pickups(season, week, team, games, slots):
     entries = team["roster"]["entries"]
     mine = [outlook(e["playerPoolEntry"]["player"], season, week, teams, started) for e in entries]
     # IR slots don't count against the roster, and players whose game started can't be dropped.
-    droppable = [p for p, e in zip(mine, entries) if e["lineupSlotId"] != IR and not p["locked"]]
+    droppable = [p for p, e in zip(mine, entries, strict=True) if e["lineupSlotId"] != IR and not p["locked"]]
 
-    available = [outlook(x["player"], season, week, teams, started, x.get("status", ""))
-                 for x in fetch_free_agents(season, week)]
+    available = [outlook(x["player"], season, week, teams, started, x.get("status", "")) for x in fetch_free_agents(season, week)]
     pool = []
     for pos, n in CANDIDATES.items():
-        pool += sorted((p for p in available if p["pos"] == pos and not p["locked"]),
-                       key=lambda p: -p["ros"])[:n]
+        pool += sorted((p for p in available if p["pos"] == pos and not p["locked"]), key=lambda p: -p["ros"])[:n]
 
     everyone = mine + pool
     with ThreadPoolExecutor(8) as ex:
-        for p, news in zip(everyone, ex.map(player_news, [p["id"] for p in everyone])):
+        for p, news in zip(everyone, ex.map(player_news, [p["id"] for p in everyone]), strict=True):
             p["news"] = news
 
     if USE_AI:
@@ -449,18 +503,24 @@ def suggest_pickups(season, week, team, games, slots):
 
 # ---------------------------------------------------------------- email
 
-def moves(roster, lineup, run):
-    """Start/bench changes vs. my current ESPN lineup."""
+
+def kicks_soon(game, now):
+    """True if the game hasn't started and kicks off within ALERT_WINDOW."""
+    return bool(game) and not game["started"] and 0 < (game["kickoff_ct"] - now).total_seconds() <= ALERT_WINDOW
+
+
+def moves(roster, lineup, run, now=None):
+    """Start/bench changes vs. my current ESPN lineup; alert runs only report players kicking off soon."""
     starting = {p["id"]: label for label, p in lineup.items() if p}
     out = []
     for p in roster:
         was = p["slot"] not in (BENCH, IR)
-        now = p["id"] in starting
-        if was == now or p["locked"]:
+        starts = p["id"] in starting
+        if was == starts or p["locked"] or (run == "alert" and not kicks_soon(p["game"], now)):
             continue
         thursday = p["game"] and p["game"]["kickoff_ct"].weekday() == 3
         when = " (plays Thursday, do this now)" if thursday and run == "thursday" else ""
-        out.append(f"Start {p['name']} at {starting[p['id']]}{when}" if now else f"Bench {p['name']}{when}")
+        out.append(f"Start {p['name']} at {starting[p['id']]}{when}" if starts else f"Bench {p['name']}{when}")
     return sorted(out, key=lambda m: ("Thursday" not in m, not m.startswith("Start")))
 
 
@@ -479,9 +539,16 @@ def row(label, p, reasons, html):
         cells = [label, "(empty)", "", "", "", "", "", ""]
     else:
         g = p["game"]
-        cells = [label, p["name"], p["team"], p["opp"],
-                 f"{g['kickoff_ct']:%a %I:%M %p}" if g else "", f"{p['proj']:.1f}",
-                 p["status"].replace("_", " ").title(), why(p, reasons)]
+        cells = [
+            label,
+            p["name"],
+            p["team"],
+            p["opp"],
+            f"{g['kickoff_ct']:%a %I:%M %p}" if g else "",
+            f"{p['proj']:.1f}",
+            p["status"].replace("_", " ").title(),
+            why(p, reasons),
+        ]
     if html:
         return "<tr>" + "".join(f"<td style='padding:4px 8px'>{c}</td>" for c in cells) + "</tr>"
     return f"{cells[0]:<6} {cells[1]:<24} {cells[3]:<8} {cells[5]:>5}  {cells[6]:<12} {cells[7]}"
@@ -489,21 +556,31 @@ def row(label, p, reasons, html):
 
 def pickup_cells(add, drop, reason):
     waivers = " (waivers)" if add["availability"] == "WAIVERS" else ""
-    return [f"{add['name']}{waivers}", f"{add['pos']} {add['team']}", f"{add['ros_avg']:.1f}",
-            drop["name"], f"{drop['ros_avg']:.1f}", reason]
+    return [
+        f"{add['name']}{waivers}",
+        f"{add['pos']} {add['team']}",
+        f"{add['ros_avg']:.1f}",
+        drop["name"],
+        f"{drop['ros_avg']:.1f}",
+        reason,
+    ]
 
 
 def pickups_html(pickups, summary):
     if not pickups:
-        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (
-            f"<p>{summary}</p>" if summary else "")
+        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (f"<p>{summary}</p>" if summary else "")
     header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g", "Why"]
-    rows = "".join("<tr>" + "".join(f"<td style='padding:4px 8px'>{c}</td>" for c in pickup_cells(*m))
-                   + "</tr>" for m in pickups)
-    return ("<h3>Free-agent pickups</h3>" + (f"<p>{summary}</p>" if summary else "")
-            + "<table style='border-collapse:collapse' border='1'><tr>"
-            + "".join(f"<th>{h}</th>" for h in header) + "</tr>" + rows + "</table>"
-            + "<p style='color:#555'>Proj/g = ESPN rest-of-season points per game.</p>")
+    rows = "".join("<tr>" + "".join(f"<td style='padding:4px 8px'>{c}</td>" for c in pickup_cells(*m)) + "</tr>" for m in pickups)
+    return (
+        "<h3>Free-agent pickups</h3>"
+        + (f"<p>{summary}</p>" if summary else "")
+        + "<table style='border-collapse:collapse' border='1'><tr>"
+        + "".join(f"<th>{h}</th>" for h in header)
+        + "</tr>"
+        + rows
+        + "</table>"
+        + "<p style='color:#555'>Proj/g = ESPN rest-of-season points per game.</p>"
+    )
 
 
 def pickups_text(pickups, summary):
@@ -516,6 +593,19 @@ def pickups_text(pickups, summary):
     return lines
 
 
+def deliver(subject, html, text):
+    ses.send_email(
+        FromEmailAddress=SENDER,
+        Destination={"ToAddresses": [RECIPIENT]},
+        Content={
+            "Simple": {
+                "Subject": {"Data": subject},
+                "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
+            }
+        },
+    )
+
+
 def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary):
     starting = {p["id"] for p in lineup.values() if p}
     bench = sorted((p for p in roster if p["id"] not in starting), key=lambda p: -p["proj"])
@@ -525,65 +615,79 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     pickups_lines = ([""] + pickups_text(pickups, pickup_summary)) if pickups is not None else []
 
     def table(rows):
-        return ("<table style='border-collapse:collapse' border='1'><tr>"
-                + "".join(f"<th>{h}</th>" for h in header) + "</tr>" + "".join(rows) + "</table>")
+        return (
+            "<table style='border-collapse:collapse' border='1'><tr>"
+            + "".join(f"<th>{h}</th>" for h in header)
+            + "</tr>"
+            + "".join(rows)
+            + "</table>"
+        )
 
-    actions_html = ("<h3>Action needed</h3><ul>" + "".join(f"<li><b>{a}</b></li>" for a in actions) + "</ul>"
-                    if actions else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>")
+    actions_html = (
+        "<h3>Action needed</h3><ul>" + "".join(f"<li><b>{a}</b></li>" for a in actions) + "</ul>"
+        if actions
+        else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>"
+    )
     html = (
         f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>{actions_html}"
         + (f"<p>{summary}</p>" if summary else "")
         + f"<h3>Lineup (projected {total:.1f})</h3>"
         + table(row(label, p, reasons, True) for label, p in lineup.items())
-        + "<h3>Bench</h3>" + table(row("BE", p, reasons, True) for p in bench)
+        + "<h3>Bench</h3>"
+        + table(row("BE", p, reasons, True) for p in bench)
         + pickups_part
-        + "".join(f"<p style='color:#555'>{n}</p>" for n in notes) + "</body></html>"
+        + "".join(f"<p style='color:#555'>{n}</p>" for n in notes)
+        + "</body></html>"
     )
     text = "\n".join(
-        [team_name(team), ""] + (["ACTION NEEDED:"] + [f"  - {a}" for a in actions] if actions
-                                 else ["No changes needed."])
+        [team_name(team), ""]
+        + (["ACTION NEEDED:"] + [f"  - {a}" for a in actions] if actions else ["No changes needed."])
         + ([""] + [summary] if summary else [])
-        + ["", f"LINEUP (projected {total:.1f}):"] + [row(label, p, reasons, False) for label, p in lineup.items()]
-        + ["", "BENCH:"] + [row("BE", p, reasons, False) for p in bench] + pickups_lines + [""] + notes
+        + ["", f"LINEUP (projected {total:.1f}):"]
+        + [row(label, p, reasons, False) for label, p in lineup.items()]
+        + ["", "BENCH:"]
+        + [row("BE", p, reasons, False) for p in bench]
+        + pickups_lines
+        + [""]
+        + notes
     )
-    ses.send_email(
-        FromEmailAddress=SENDER,
-        Destination={"ToAddresses": [RECIPIENT]},
-        Content={"Simple": {
-            "Subject": {"Data": subject},
-            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-        }},
-    )
+    deliver(subject, html, text)
 
 
 # ---------------------------------------------------------------- handler
 
+
 def waiver_run(season, week, team, games, slots, test):
     """Tuesday: email just the pickups, ahead of the Wednesday waiver run. Silent if there are none."""
-    pickups, summary, note = suggest_pickups(season, week, team, games, slots)
+    # Monday night's games are over, so nobody is locked; if ESPN still reports the finished week, look ahead.
+    if games and all(g["started"] for g in games):
+        week += 1
+    pickups, summary, note = suggest_pickups(season, week, team, [], slots)
     if not pickups and not test:
         log.info("week %s waivers: nothing worth claiming, no email", week)
         return {"status": "no pickups", "week": week, "run": "waivers"}
-    html = (f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>"
-            + pickups_html(pickups, summary) + f"<p style='color:#555'>{note}</p></body></html>")
-    text = "\n".join([team_name(team), ""] + pickups_text(pickups, summary) + ["", note])
-    ses.send_email(
-        FromEmailAddress=SENDER,
-        Destination={"ToAddresses": [RECIPIENT]},
-        Content={"Simple": {
-            "Subject": {"Data": f"{'[TEST] ' if test else ''}Fantasy Week {week} Waiver Pickups"},
-            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-        }},
+    html = (
+        f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>"
+        + pickups_html(pickups, summary)
+        + f"<p style='color:#555'>{note}</p></body></html>"
     )
+    text = "\n".join([team_name(team), ""] + pickups_text(pickups, summary) + ["", note])
+    deliver(f"{'[TEST] ' if test else ''}Fantasy Week {week} Waiver Pickups", html, text)
     log.info("sent waiver pickups for week %s: %d", week, len(pickups))
-    return {"status": "sent", "week": week, "run": "waivers",
-            "pickups": [f"add {a['name']}, drop {d['name']}" for a, d, _ in pickups]}
+    return {
+        "status": "sent",
+        "week": week,
+        "run": "waivers",
+        "pickups": [f"add {a['name']}, drop {d['name']}" for a, d, _ in pickups],
+    }
 
 
 def handler(event, context):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
     run = event.get("run") or {1: "waivers", 3: "thursday", 5: "saturday"}.get(now_ct.weekday(), "sunday")
+    if run not in RUNS:
+        raise ValueError(f"unknown run {run!r}; expected one of {sorted(RUNS)}")
     test = bool(event.get("test"))
 
     sb = fetch("scoreboard")
@@ -593,8 +697,7 @@ def handler(event, context):
     season = sb.get("season", {}).get("year", now_ct.year)
     week = sb.get("week", {}).get("number")
     games = parse_games(sb)
-    if run == "alert" and not test and not any(
-            0 < (g["kickoff_ct"] - now_ct).total_seconds() <= ALERT_WINDOW for g in games if not g["started"]):
+    if run == "alert" and not test and not any(kicks_soon(g, now_ct) for g in games):
         log.info("alert: no game kicks off in the next %d min, skipping", ALERT_WINDOW // 60)
         return {"status": "no game soon", "run": run}
 
@@ -606,6 +709,11 @@ def handler(event, context):
     roster = players(team, games, week)
     lineup = best_lineup(roster, slots)
     notes, reasons, summary = [], {}, ""
+
+    if run == "alert" and not test and not moves(roster, lineup, run, now_ct):
+        # Nothing to change on projections alone, so skip the AI review and the email.
+        log.info("week %s alert: lineup is still right, no email", week)
+        return {"status": "no changes", "week": week, "run": run}
 
     calls = close_calls(roster, lineup, slots)
     if not USE_AI:
@@ -624,12 +732,12 @@ def handler(event, context):
         notes.append("Only Thursday-game players need a decision today; the rest is a preview.")
     if any(not p for p in lineup.values()):
         notes.append("Some slots have no healthy eligible player; check waivers/free agents.")
-    actions = moves(roster, lineup, run)
-    if run == "alert" and not actions and not test:
+    actions = moves(roster, lineup, run, now_ct)
+    if run == "alert" and not actions and not test:  # the AI review can undo a projection-only change
         log.info("week %s alert: lineup is still right, no email", week)
         return {"status": "no changes", "week": week, "run": run}
     if run == "alert":
-        notes.append("Late check: injury news or inactives changed since your last email.")
+        notes.append("Late check before kickoff; only players in games starting soon are listed.")
 
     pickups, pickup_summary = None, ""  # None = pickups section failed, leave it out
     if run != "alert":
@@ -640,11 +748,15 @@ def handler(event, context):
             log.exception("pickups failed")
             notes.append(f"Free-agent pickups failed ({type(exc).__name__}: {exc}).")
 
-    label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final",
-             "alert": "Lineup alert"}[run]
+    label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final", "alert": "Lineup alert"}[run]
     subject = f"{'[TEST] ' if test else ''}Fantasy Week {week} Lineup - {label}"
     send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary)
     log.info("sent lineup for week %s (%s): %d moves", week, run, len(actions))
-    return {"status": "sent", "week": week, "run": run, "moves": actions,
-            "lineup": {k: (p["name"] if p else None) for k, p in lineup.items()},
-            "pickups": [f"add {a['name']}, drop {d['name']}" for a, d, _ in pickups or []]}
+    return {
+        "status": "sent",
+        "week": week,
+        "run": run,
+        "moves": actions,
+        "lineup": {k: (p["name"] if p else None) for k, p in lineup.items()},
+        "pickups": [f"add {a['name']}, drop {d['name']}" for a, d, _ in pickups or []],
+    }

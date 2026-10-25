@@ -15,7 +15,7 @@ import os
 import statistics
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -50,6 +50,7 @@ ses = boto3.client("sesv2")
 
 # ---------------------------------------------------------------- ESPN data
 
+
 def fetch(path):
     req = urllib.request.Request(f"{ESPN}/{path}", headers=UA)
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -79,25 +80,27 @@ def parse_games(scoreboard):
                 fav_abbr = home["team"]["abbreviation"] if spread < 0 else away["team"]["abbreviation"]
             fav_by = abs(float(spread))
 
-        kickoff = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-        games.append({
-            "id": ev["id"],
-            "kickoff": kickoff,
-            "kickoff_ct": kickoff.astimezone(CENTRAL),
-            "started": status.get("state") != "pre",
-            "home": home["team"]["abbreviation"],
-            "away": away["team"]["abbreviation"],
-            "home_id": int(home["team"]["id"]),
-            "away_id": int(away["team"]["id"]),
-            "home_name": home["team"]["displayName"],
-            "away_name": away["team"]["displayName"],
-            "home_record": (home.get("records") or [{}])[0].get("summary", ""),
-            "away_record": (away.get("records") or [{}])[0].get("summary", ""),
-            "line": odds.get("details", "no line"),
-            "over_under": odds.get("overUnder"),
-            "fav": fav_abbr,
-            "fav_by": fav_by,
-        })
+        kickoff = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+        games.append(
+            {
+                "id": ev["id"],
+                "kickoff": kickoff,
+                "kickoff_ct": kickoff.astimezone(CENTRAL),
+                "started": status.get("state") != "pre",
+                "home": home["team"]["abbreviation"],
+                "away": away["team"]["abbreviation"],
+                "home_id": int(home["team"]["id"]),
+                "away_id": int(away["team"]["id"]),
+                "home_name": home["team"]["displayName"],
+                "away_name": away["team"]["displayName"],
+                "home_record": (home.get("records") or [{}])[0].get("summary", ""),
+                "away_record": (away.get("records") or [{}])[0].get("summary", ""),
+                "line": odds.get("details", "no line"),
+                "over_under": odds.get("overUnder"),
+                "fav": fav_abbr,
+                "fav_by": fav_by,
+            }
+        )
     games.sort(key=lambda g: g["kickoff"])
     return games
 
@@ -105,7 +108,7 @@ def parse_games(scoreboard):
 def injuries_by_team(teams):
     """Non-active injury designations for the given team abbreviations."""
     out = {t: [] for t in teams}
-    recent_ir = datetime.now(timezone.utc) - timedelta(days=14)
+    recent_ir = datetime.now(UTC) - timedelta(days=14)
     for team in fetch("injuries").get("injuries", []):
         for inj in team.get("injuries", []):
             ath = inj.get("athlete", {})
@@ -116,8 +119,8 @@ def injuries_by_team(teams):
             # Long-term IR players are already priced in; keep only fresh ones.
             if status == "Injured Reserve":
                 try:
-                    when = datetime.strptime(inj["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-                except (KeyError, ValueError):
+                    when = datetime.strptime(inj["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+                except KeyError, ValueError:
                     continue
                 if when < recent_ir:
                     continue
@@ -130,13 +133,13 @@ def injuries_by_team(teams):
 
 
 def recent_transactions(teams, days=10):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     out = []
     for tx in fetch("transactions").get("transactions", []):
         abbr = tx.get("team", {}).get("abbreviation")
         try:
-            when = datetime.strptime(tx["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-        except (KeyError, ValueError):
+            when = datetime.strptime(tx["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+        except KeyError, ValueError:
             continue
         if abbr in teams and when >= cutoff:
             out.append(f"{when:%m/%d} {abbr}: {tx.get('description', '')}")
@@ -144,12 +147,12 @@ def recent_transactions(teams, days=10):
 
 
 def recent_news(days=5):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     out = []
     for art in fetch("news?limit=50").get("articles", []):
         try:
             when = datetime.fromisoformat(art["published"].replace("Z", "+00:00"))
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             continue
         if when >= cutoff:
             out.append(f"{when:%m/%d} {art.get('headline', '')} - {art.get('description', '')}")
@@ -158,11 +161,11 @@ def recent_news(days=5):
 
 # ------------------------------------------------------ betting markets
 
+
 def kalshi_markets():
     markets, cursor = [], ""
     while True:
-        query = urllib.parse.urlencode({"series_ticker": "KXNFLGAME", "status": "open",
-                                        "limit": 200, "cursor": cursor})
+        query = urllib.parse.urlencode({"series_ticker": "KXNFLGAME", "status": "open", "limit": 200, "cursor": cursor})
         req = urllib.request.Request(f"{KALSHI}?{query}", headers=UA)
         with urllib.request.urlopen(req, timeout=30) as resp:
             page = json.load(resp)
@@ -182,7 +185,7 @@ def add_kalshi(games):
     for m in kalshi_markets():
         try:
             bid, ask = float(m["yes_bid_dollars"]), float(m["yes_ask_dollars"])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         if 0 < bid <= ask and ask - bid <= 0.10:  # skip thin markets
             quotes[m["ticker"]] = (bid + ask) / 2
@@ -220,8 +223,7 @@ def add_consensus(games, key):
     home_prob is the no-vig moneyline win probability averaged across books;
     the line becomes the median spread. Returns the number of games matched.
     """
-    query = urllib.parse.urlencode({"apiKey": key, "regions": "us", "markets": "h2h,spreads",
-                                    "oddsFormat": "american"})
+    query = urllib.parse.urlencode({"apiKey": key, "regions": "us", "markets": "h2h,spreads", "oddsFormat": "american"})
     req = urllib.request.Request(f"{ODDS_API}?{query}", headers=UA)
     with urllib.request.urlopen(req, timeout=30) as resp:
         log.info("odds api credits remaining: %s", resp.headers.get("x-requests-remaining"))
@@ -232,9 +234,16 @@ def add_consensus(games, key):
         if "home_prob" in g:
             continue
         home, away = g["home_name"], g["away_name"]
-        ev = next((e for e in events if e["home_team"] == home and e["away_team"] == away
-                   and abs(datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00"))
-                           - g["kickoff"]) < timedelta(hours=12)), None)
+        ev = next(
+            (
+                e
+                for e in events
+                if e["home_team"] == home
+                and e["away_team"] == away
+                and abs(datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00")) - g["kickoff"]) < timedelta(hours=12)
+            ),
+            None,
+        )
         if not ev:
             continue
         probs, points = [], []
@@ -273,6 +282,7 @@ def home_win_prob(g):
 
 # ---------------------------------------------------------- locked state
 
+
 def state_name(season, week):
     return f"{STATE_PREFIX}/{season}-w{week}"
 
@@ -286,11 +296,11 @@ def load_locked(season, week):
 
 
 def save_locked(season, week, locked):
-    ssm.put_parameter(Name=state_name(season, week), Value=json.dumps(locked),
-                      Type="String", Overwrite=True)
+    ssm.put_parameter(Name=state_name(season, week), Value=json.dumps(locked), Type="String", Overwrite=True)
 
 
 # ------------------------------------------------------------ pick logic
+
 
 class Pick(BaseModel):
     game_id: str
@@ -306,13 +316,14 @@ class PickSheet(BaseModel):
 
 def spread_picks(games, values):
     """No-AI picks: take the likelier winner, more points on bigger favorites."""
+
     def pick_prob(g):
         p = home_win_prob(g)
         return max(p, 1 - p)
 
     ranked = sorted(games, key=pick_prob)  # closest game -> fewest points
     picks = []
-    for g, pts in zip(ranked, sorted(values)):
+    for g, pts in zip(ranked, sorted(values), strict=False):
         p = home_win_prob(g)
         winner = g["home"] if p >= 0.5 else g["away"]  # dead even -> home team
         if "prob_source" in g:
@@ -385,12 +396,15 @@ def claude_tool_call(prompt, tool_name, description, schema):
 
 def ai_picks(games, values, locked_note):
     teams = {g["home"] for g in games} | {g["away"] for g in games}
-    prompt = build_prompt(games, values, injuries_by_team(teams),
-                          recent_transactions(teams), recent_news(), locked_note)
-    sheet = PickSheet.model_validate(claude_tool_call(
-        prompt, "submit_picks",
-        "Submit the finished pick sheet: one pick per game plus a short summary.",
-        PickSheet.model_json_schema()))
+    prompt = build_prompt(games, values, injuries_by_team(teams), recent_transactions(teams), recent_news(), locked_note)
+    sheet = PickSheet.model_validate(
+        claude_tool_call(
+            prompt,
+            "submit_picks",
+            "Submit the finished pick sheet: one pick per game plus a short summary.",
+            PickSheet.model_json_schema(),
+        )
+    )
     return normalize(sheet.picks, games, values), sheet.summary
 
 
@@ -412,12 +426,13 @@ def normalize(picks, games, values):
         p.confidence = -1  # sort below everything the model ranked
         seen[p.game_id] = p
     ordered = sorted(seen.values(), key=lambda p: p.confidence)
-    for p, pts in zip(ordered, sorted(values)):
+    for p, pts in zip(ordered, sorted(values), strict=False):
         p.confidence = pts
     return ordered
 
 
 # ---------------------------------------------------------------- email
+
 
 def send_email(subject, picks, games, notes, summary):
     by_id = {g["id"]: g for g in games}
@@ -447,14 +462,17 @@ def send_email(subject, picks, games, notes, summary):
     ses.send_email(
         FromEmailAddress=SENDER,
         Destination={"ToAddresses": [RECIPIENT]},
-        Content={"Simple": {
-            "Subject": {"Data": subject},
-            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-        }},
+        Content={
+            "Simple": {
+                "Subject": {"Data": subject},
+                "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
+            }
+        },
     )
 
 
 # ---------------------------------------------------------------- handler
+
 
 def handler(event, context):
     event = event or {}
@@ -496,8 +514,7 @@ def handler(event, context):
         notes.append(f"No market price for {', '.join(no_market)}; used the ESPN line.")
 
     if run == "thursday":
-        targets = [g for g in games if g["kickoff_ct"].weekday() == 3
-                   and not g["started"] and g["id"] not in locked]
+        targets = [g for g in games if g["kickoff_ct"].weekday() == 3 and not g["started"] and g["id"] not in locked]
         # Rank the whole week so the Thursday game gets a fair share of the points.
         pool = [g for g in games if not g["started"] and g["id"] not in locked]
     else:
@@ -513,9 +530,8 @@ def handler(event, context):
     # know; assume they took the lowest leftovers so ours keep the high values.
     unknown = [g for g in games if g["started"] and g["id"] not in locked]
     if unknown:
-        available = set(sorted(available)[len(available) - len(pool):])
-        notes.append(f"{len(unknown)} game(s) already kicked off with no saved pick; "
-                     f"assumed they used the lowest point values.")
+        available = set(sorted(available)[len(available) - len(pool) :])
+        notes.append(f"{len(unknown)} game(s) already kicked off with no saved pick; assumed they used the lowest point values.")
 
     locked_note = ""
     if locked:
@@ -547,5 +563,4 @@ def handler(event, context):
     subject = f"{'[TEST] ' if test else ''}NFL Week {week} Pick'em - {label}"
     send_email(subject, picks, games, notes, summary)
     log.info("sent %d picks for week %s (%s)", len(picks), week, run)
-    return {"status": "sent", "week": week, "run": run,
-            "picks": [p.model_dump() for p in picks]}
+    return {"status": "sent", "week": week, "run": run, "picks": [p.model_dump() for p in picks]}

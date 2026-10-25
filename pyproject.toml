@@ -1,0 +1,27 @@
+[project]
+name = "nfl-pickem"
+version = "0.1.0"
+description = "NFL pick'em picks and fantasy lineup emails on AWS Lambda"
+requires-python = ">=3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --cov=app --cov=lineup --cov-report=term-missing:skip-covered"
+
+[tool.ruff]
+line-length = 130
+target-version = "py314"
+extend-exclude = ["build", ".venv", "node_modules"]
+
+[tool.ruff.lint]
+# E/F/W: correctness, I: imports, B: bugbear, UP: modern syntax, S: bandit security checks
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+# Every URL opened is a hard-coded https endpoint (ESPN, Kalshi, The Odds API).
+"src/**" = ["S310"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "lineup"]
