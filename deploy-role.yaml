@@ -76,7 +76,7 @@ Resources:
                 Resource: "*"
               - Sid: EmailIdentities
                 Effect: Allow
-                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, ses:PutEmailIdentityDkimAttributes, ses:PutEmailIdentityDkimSigningAttributes, ses:PutEmailIdentityFeedbackAttributes, ses:PutEmailIdentityMailFromAttributes, ses:PutEmailIdentityConfigurationSetAttributes, ses:TagResource, ses:UntagResource]
+                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, "ses:PutEmailIdentity*", ses:TagResource, ses:UntagResource]
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
               # The stack's two roles are named nfl-pickem-FunctionRole-<suffix> and nfl-pickem-SchedulerRole-<suffix>.
               # The pattern deliberately excludes this deploy role, so it can't edit its own permissions or trust.
