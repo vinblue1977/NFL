@@ -73,27 +73,9 @@ jobs:
           advanced-security: false  # findings as PR annotations, not uploaded to code scanning
           annotations: true
 
-  # Deploys are serialized but not ordered: an older commit's checks can finish after a newer one has deployed.
-  # Only the head of main deploys; if a newer commit's checks fail, fix forward and the next push deploys.
-  latest:
+  deploy:
     needs: [python, workflow-lint]
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
-    timeout-minutes: 5
-    outputs:
-      current: ${{ steps.head.outputs.current }}
-    steps:
-      - id: head
-        run: |
-          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
-          else echo "current=false" >> "$GITHUB_OUTPUT"; echo "main is now at $head; not deploying $GITHUB_SHA."; fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-  deploy:
-    needs: latest
-    if: needs.latest.outputs.current == 'true'
     concurrency:
       group: deploy-production
       cancel-in-progress: false
@@ -115,12 +97,21 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-2  # the deploy role's permissions are scoped to this region
           mask-aws-account-id: true  # logs are visible to anyone with repo access
-      - name: Deploy
-        run: ./deploy.sh
-      - name: Health check (both Lambdas active after the update)
+      - name: Deploy and check
+        # Deploys are serialized but not ordered, and this job may have queued behind another one, so check right
+        # before deploying that this commit is still the head of main. If a newer commit's checks fail, fix forward:
+        # the next push deploys.
         run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::warning::Skipped the deploy: main is now at $head, not $GITHUB_SHA."
+            exit 0
+          fi
+          ./deploy.sh
           for fn in nfl-pickem nfl-fantasy-lineup; do
             info="$(aws lambda get-function --function-name "$fn" --query Configuration --output json)"
             echo "$fn: $(jq -r '[.State, .LastUpdateStatus, .LastModified] | join(" ")' <<<"$info")"
             jq -e '.State == "Active" and .LastUpdateStatus == "Successful"' <<<"$info" >/dev/null
           done
+        env:
+          GH_TOKEN: ${{ github.token }}

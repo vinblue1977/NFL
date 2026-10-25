@@ -18,7 +18,7 @@ python3 -m pip install -q --no-compile --require-hashes -r requirements.txt -t b
 rm -rf build/{boto3,botocore,s3transfer,jmespath}{,-*.dist-info}
 cp src/*.py build/
 # `cloudformation package` keys the zip on file mtimes too; fix them so identical code gets an identical key (a no-op deploy).
-find build -exec touch -t 200001010000 {} +
+find build -exec env TZ=UTC touch -h -t 200001010000 {} +
 
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
   aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
