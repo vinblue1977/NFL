@@ -8,7 +8,12 @@ Thursday run: act on players in the Thursday game; the rest is a preview.
 Saturday run: full preview after Friday's injury reports.
 Sunday run:   final lineup for everyone whose game hasn't started.
 
-Every run also suggests free-agent pickups: the best available players by
+Alert runs (early and late Sunday, Monday evening) re-check the lineup once a
+game's inactives are out. They do nothing unless a game kicks off within two
+hours, and email only if a start/bench change is needed.
+Waiver run (Tuesday): emails only the free-agent pickups, and only if there are any.
+
+Every other run also suggests free-agent pickups: the best available players by
 ESPN's rest-of-season projection, checked against recent player news.
 """
 
@@ -32,6 +37,7 @@ USE_AI = os.environ.get("LINEUP_USE_AI", "true").lower() == "true"
 S2_PARAM = os.environ.get("ESPN_S2_PARAM", "/nfl-pickem/espn-s2")
 SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
+ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
 SLOTS = {0: "QB", 1: "TQB", 2: "RB", 3: "RB/WR", 4: "WR", 5: "WR/TE", 6: "TE", 7: "OP",
@@ -552,10 +558,32 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
 
 # ---------------------------------------------------------------- handler
 
+def waiver_run(season, week, team, games, slots, test):
+    """Tuesday: email just the pickups, ahead of the Wednesday waiver run. Silent if there are none."""
+    pickups, summary, note = suggest_pickups(season, week, team, games, slots)
+    if not pickups and not test:
+        log.info("week %s waivers: nothing worth claiming, no email", week)
+        return {"status": "no pickups", "week": week, "run": "waivers"}
+    html = (f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>"
+            + pickups_html(pickups, summary) + f"<p style='color:#555'>{note}</p></body></html>")
+    text = "\n".join([team_name(team), ""] + pickups_text(pickups, summary) + ["", note])
+    ses.send_email(
+        FromEmailAddress=SENDER,
+        Destination={"ToAddresses": [RECIPIENT]},
+        Content={"Simple": {
+            "Subject": {"Data": f"{'[TEST] ' if test else ''}Fantasy Week {week} Waiver Pickups"},
+            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
+        }},
+    )
+    log.info("sent waiver pickups for week %s: %d", week, len(pickups))
+    return {"status": "sent", "week": week, "run": "waivers",
+            "pickups": [f"add {a['name']}, drop {d['name']}" for a, d, _ in pickups]}
+
+
 def handler(event, context):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
-    run = event.get("run") or {3: "thursday", 5: "saturday"}.get(now_ct.weekday(), "sunday")
+    run = event.get("run") or {1: "waivers", 3: "thursday", 5: "saturday"}.get(now_ct.weekday(), "sunday")
     test = bool(event.get("test"))
 
     sb = fetch("scoreboard")
@@ -565,10 +593,16 @@ def handler(event, context):
     season = sb.get("season", {}).get("year", now_ct.year)
     week = sb.get("week", {}).get("number")
     games = parse_games(sb)
+    if run == "alert" and not test and not any(
+            0 < (g["kickoff_ct"] - now_ct).total_seconds() <= ALERT_WINDOW for g in games if not g["started"]):
+        log.info("alert: no game kicks off in the next %d min, skipping", ALERT_WINDOW // 60)
+        return {"status": "no game soon", "run": run}
 
     league, swid = fetch_league(season, week)
     team = my_team(league, swid)
     slots = lineup_slots(league)
+    if run == "waivers":
+        return waiver_run(season, week, team, games, slots, test)
     roster = players(team, games, week)
     lineup = best_lineup(roster, slots)
     notes, reasons, summary = [], {}, ""
@@ -591,16 +625,23 @@ def handler(event, context):
     if any(not p for p in lineup.values()):
         notes.append("Some slots have no healthy eligible player; check waivers/free agents.")
     actions = moves(roster, lineup, run)
+    if run == "alert" and not actions and not test:
+        log.info("week %s alert: lineup is still right, no email", week)
+        return {"status": "no changes", "week": week, "run": run}
+    if run == "alert":
+        notes.append("Late check: injury news or inactives changed since your last email.")
 
     pickups, pickup_summary = None, ""  # None = pickups section failed, leave it out
-    try:
-        pickups, pickup_summary, pickup_note = suggest_pickups(season, week, team, games, slots)
-        notes.append(pickup_note)
-    except Exception as exc:  # the lineup email still goes out
-        log.exception("pickups failed")
-        notes.append(f"Free-agent pickups failed ({type(exc).__name__}: {exc}).")
+    if run != "alert":
+        try:
+            pickups, pickup_summary, pickup_note = suggest_pickups(season, week, team, games, slots)
+            notes.append(pickup_note)
+        except Exception as exc:  # the lineup email still goes out
+            log.exception("pickups failed")
+            notes.append(f"Free-agent pickups failed ({type(exc).__name__}: {exc}).")
 
-    label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final"}[run]
+    label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final",
+             "alert": "Lineup alert"}[run]
     subject = f"{'[TEST] ' if test else ''}Fantasy Week {week} Lineup - {label}"
     send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary)
     log.info("sent lineup for week %s (%s): %d moves", week, run, len(actions))
