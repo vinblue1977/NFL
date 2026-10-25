@@ -10,6 +10,13 @@ import lineup
 from lineup import BENCH, IR
 
 
+def raises(exc):
+    def fail(*args, **kwargs):
+        raise exc
+
+    return fail
+
+
 def espn_player(pid, name, pos, team, ros, status=None):
     stat = {"seasonId": 2026, "statSourceId": 1, "statSplitTypeId": 0, "scoringPeriodId": 0}
     return {
@@ -70,7 +77,7 @@ class TestSuggestPickups:
 
     def test_ai_failure_falls_back_to_projections(self, env, monkeypatch):
         monkeypatch.setattr(lineup, "USE_AI", True)
-        monkeypatch.setattr(lineup, "ai_pickups", lambda *a: (_ for _ in ()).throw(ValueError("bad ids")))
+        monkeypatch.setattr(lineup, "ai_pickups", raises(ValueError("bad ids")))
         moves, summary, note = self.run(env)
         assert len(moves) == 1 and summary == "" and "AI pickup review failed (ValueError: bad ids)" in note
 
@@ -198,46 +205,44 @@ class TestOddsFallbacks:
         assert g[0]["home_prob"] > 0.5 and g[0]["line"] == "KC -2.5"
 
 
-class PickemEnv:
+@pytest.fixture
+def pickem_env(monkeypatch, fake_ssm):
     """run_pickem with every network call stubbed; one unpriced Sunday game."""
-
-    @pytest.fixture
-    def env(self, monkeypatch, fake_ssm):
-        game = {
-            "id": "g1",
-            "home": "KC",
-            "away": "LV",
-            "home_name": "KC",
-            "away_name": "LV",
-            "home_record": "",
-            "away_record": "",
-            "line": "KC -3",
-            "over_under": 44,
-            "fav": "KC",
-            "fav_by": 3.0,
-            "started": False,
-            "kickoff": datetime(2026, 10, 25, 17, tzinfo=UTC),
-            "kickoff_ct": datetime(2026, 10, 25, 12, tzinfo=lineup.CENTRAL),
-        }
-        sent = []
-        monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
-        monkeypatch.setattr(app, "parse_games", lambda sb: [game])
-        monkeypatch.setattr(app, "add_kalshi", lambda games: 0)
-        monkeypatch.setattr(app, "send_email", lambda *a: sent.append(a))
-        monkeypatch.setattr(app, "USE_AI", False)
-        return sent, fake_ssm
+    game = {
+        "id": "g1",
+        "home": "KC",
+        "away": "LV",
+        "home_name": "KC",
+        "away_name": "LV",
+        "home_record": "",
+        "away_record": "",
+        "line": "KC -3",
+        "over_under": 44,
+        "fav": "KC",
+        "fav_by": 3.0,
+        "started": False,
+        "kickoff": datetime(2026, 10, 25, 17, tzinfo=UTC),
+        "kickoff_ct": datetime(2026, 10, 25, 12, tzinfo=lineup.CENTRAL),
+    }
+    sent = []
+    monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+    monkeypatch.setattr(app, "parse_games", lambda sb: [game])
+    monkeypatch.setattr(app, "add_kalshi", lambda games: 0)
+    monkeypatch.setattr(app, "send_email", lambda *a: sent.append(a))
+    monkeypatch.setattr(app, "USE_AI", False)
+    return sent, fake_ssm
 
 
-class TestPickemOddsAndAi(PickemEnv):
-    def test_odds_api_runs_when_a_key_exists_and_its_failure_is_a_note(self, env, monkeypatch):
-        sent, _ = env
+class TestPickemOddsAndAi:
+    def test_odds_api_runs_when_a_key_exists_and_its_failure_is_a_note(self, pickem_env, monkeypatch):
+        sent, _ = pickem_env
         monkeypatch.setattr(app, "odds_api_key", lambda: "key")
-        monkeypatch.setattr(app, "add_consensus", lambda games, key: (_ for _ in ()).throw(OSError("quota")))
+        monkeypatch.setattr(app, "add_consensus", raises(OSError("quota")))
         app.run_pickem({"run": "sunday"})
         assert any("Odds API failed (OSError: quota)" in n for n in sent[0][3])
 
-    def test_a_successful_odds_api_call_fills_the_price(self, env, monkeypatch):
-        sent, _ = env
+    def test_a_successful_odds_api_call_fills_the_price(self, pickem_env, monkeypatch):
+        sent, _ = pickem_env
         monkeypatch.setattr(app, "odds_api_key", lambda: "key")
         monkeypatch.setattr(
             app, "add_consensus", lambda games, key: games[0].update(home_prob=0.7, prob_source="consensus of 3 sportsbooks")
@@ -245,8 +250,8 @@ class TestPickemOddsAndAi(PickemEnv):
         result = app.run_pickem({"run": "sunday"})
         assert "70% to win (consensus of 3 sportsbooks)" in sent[0][1][0].reasoning and result["status"] == "sent"
 
-    def test_ai_picks_are_used_flagged_and_noted(self, env, monkeypatch):
-        sent, store = env
+    def test_ai_picks_are_used_flagged_and_noted(self, pickem_env, monkeypatch):
+        sent, store = pickem_env
         monkeypatch.setattr(app, "odds_api_key", lambda: None)
         monkeypatch.setattr(app, "USE_AI", True)
         monkeypatch.setattr(
@@ -324,5 +329,5 @@ class TestRecapEdges:
         monkeypatch.setattr(lineup, "lineup_slots", lambda league: SLOTS)
         monkeypatch.setattr(lineup, "players", lambda *a: [player(1, "QB", 20, slot=0, actual=5)])
         monkeypatch.setattr(lineup, "deliver", lambda *a: None)
-        monkeypatch.setattr(lineup, "save_param", lambda *a: (_ for _ in ()).throw(OSError("denied")))
+        monkeypatch.setattr(lineup, "save_param", raises(OSError("denied")))
         assert lineup.recap_run(2026, sb, test=False)["status"] == "sent"
