@@ -72,6 +72,12 @@ class TestMatchupResult:
             },
             {"teams": [], "schedule": [{"matchupPeriodId": 7, "home": {"teamId": 1, "totalPoints": 1}}]},  # bye
             {"teams": [], "schedule": [{"matchupPeriodId": 7, "home": {"teamId": 1}, "away": {"teamId": 2}}]},  # not scored yet
+            {  # ESPN hasn't tallied the matchup yet (seen live mid-week: 0 to 0 while players had scored)
+                "teams": [],
+                "schedule": [
+                    {"matchupPeriodId": 7, "home": {"teamId": 1, "totalPoints": 0.0}, "away": {"teamId": 2, "totalPoints": 0.0}}
+                ],
+            },
         ],
     )
     def test_none_when_there_is_nothing_to_report(self, league):

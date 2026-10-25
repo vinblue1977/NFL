@@ -775,7 +775,7 @@ def matchup_result(league, team, week):
         if m.get("matchupPeriodId") not in periods or team["id"] not in (home.get("teamId"), away.get("teamId")):
             continue
         me, opp = (home, away) if home.get("teamId") == team["id"] else (away, home)
-        if "totalPoints" in me and "totalPoints" in opp:
+        if "totalPoints" in me and "totalPoints" in opp and (me["totalPoints"] or opp["totalPoints"]):  # 0-0: not tallied yet
             return me["totalPoints"], names.get(opp.get("teamId"), "your opponent"), opp["totalPoints"]
     return None
 
