@@ -106,6 +106,7 @@ Resources:
     Properties:
       EmailIdentity: !Ref RecipientEmail
 
+  # FunctionRole and SchedulerRole are auto-named; deploy-role.yaml scopes the GitHub deploy role to those name patterns.
   FunctionRole:
     Type: AWS::IAM::Role
     Properties:

@@ -1,6 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Role that GitHub Actions assumes (OIDC, no stored keys) to deploy the nfl-pickem stack with ./deploy.sh.
+  The scoping assumes the stack's roles are auto-named (FunctionRole, SchedulerRole in template.yaml): if you add a RoleName,
+  rename one or add a third role, update the role patterns below first.
   Deployed once by hand, separately from the app stack so the stack can't delete its own deploy role:
   aws cloudformation deploy --region us-east-2 --stack-name nfl-pickem-deploy-role --template-file deploy-role.yaml --capabilities CAPABILITY_IAM --tags project=nfl-pickem
 
@@ -74,7 +76,7 @@ Resources:
                 Resource: "*"
               - Sid: EmailIdentities
                 Effect: Allow
-                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, "ses:PutEmailIdentity*", ses:TagResource, ses:UntagResource]
+                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, ses:PutEmailIdentityDkimAttributes, ses:PutEmailIdentityDkimSigningAttributes, ses:PutEmailIdentityFeedbackAttributes, ses:PutEmailIdentityMailFromAttributes, ses:PutEmailIdentityConfigurationSetAttributes, ses:TagResource, ses:UntagResource]
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
               # The stack's two roles are named nfl-pickem-FunctionRole-<suffix> and nfl-pickem-SchedulerRole-<suffix>.
               # The pattern deliberately excludes this deploy role, so it can't edit its own permissions or trust.
@@ -97,7 +99,9 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-FunctionRole-*
                   - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-SchedulerRole-*
-              # Only the Lambda logging policy can be attached, so a managed policy like AdministratorAccess can't be.
+              # Trust boundary: whatever is merged to main (the only branch the production environment accepts) is deployed,
+              # including inline role policies, so this role is as trusted as write access to main. This statement just
+              # stops a managed policy such as AdministratorAccess from being attached by accident.
               - Sid: AttachLoggingPolicyOnly
                 Effect: Allow
                 Action: [iam:AttachRolePolicy, iam:DetachRolePolicy]

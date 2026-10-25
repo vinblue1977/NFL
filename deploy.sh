@@ -11,7 +11,8 @@ BUCKET=nfl-pickem-artifacts-$ACCOUNT-$REGION
 
 rm -rf build && mkdir build
 # Linux/arm64 wheels for the Lambda runtime, regardless of the local machine.
-python3 -m pip install -q --require-hashes -r requirements.txt -t build \
+# --no-compile keeps .pyc files (which embed mtimes) out of the zip, so identical code packages to an identical key.
+python3 -m pip install -q --no-compile --require-hashes -r requirements.txt -t build \
   --platform manylinux2014_aarch64 --implementation cp --python-version 3.14 --only-binary=:all:
 # The Lambda runtime already ships boto3/botocore; don't bundle a second copy.
 rm -rf build/{boto3,botocore,s3transfer,jmespath}{,-*.dist-info}

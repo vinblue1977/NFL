@@ -17,7 +17,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged stack is a no-op), using GitHub OIDC -> short-lived AWS credentials.
+# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a no-op), using GitHub OIDC -> short-lived AWS credentials.
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
@@ -89,17 +89,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Skip if a newer commit has landed on main
+        id: head
+        # Deploys are serialized but not ordered: an older commit's checks can finish after a newer one has deployed.
+        run: |
+          git fetch --quiet origin main
+          if [ "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
+          else echo "A newer commit is on main; skipping this deploy."; fi
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        if: steps.head.outputs.current == 'true'
         with:
           python-version: "3.14"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        if: steps.head.outputs.current == 'true'
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-2  # the deploy role's permissions are scoped to this region
           mask-aws-account-id: true  # logs are visible to anyone with repo access
       - name: Deploy
+        if: steps.head.outputs.current == 'true'
         run: ./deploy.sh
-      - name: Smoke test
+      - name: Health check (both Lambdas active after the update)
+        if: steps.head.outputs.current == 'true'
         run: |
           for fn in nfl-pickem nfl-fantasy-lineup; do
             info="$(aws lambda get-function --function-name "$fn" --query Configuration --output json)"
