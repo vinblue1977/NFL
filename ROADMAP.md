@@ -3,7 +3,7 @@
 ## Worth doing
 
 1. ~~**Tests.**~~ Done for the pure logic (pick'em probabilities, Kalshi matching, confidence points, lineup slotting, validation, alert/waiver gating): `make test`. Still untested: the email builders, `app.handler`, `ai_picks`/`ai_lineup` prompts, and the live ESPN/Kalshi fetchers (add recorded-response fixtures).
-2. **Pick'em failure alerts.** The fantasy Lambda has an error alarm; the pick'em Lambda does not because the account is at the 10-alarm free-tier limit. Free options: have the Lambda publish to `ComedTopic` itself when it catches an exception, use a metric-math alarm, or retire a less useful alarm.
+2. ~~**Pick'em failure alerts.**~~ Done: the Lambda publishes to `ComedTopic` itself when a run raises (no extra alarm, so the account stays at the free-tier limit). Async retries are off for the Lambda so one failure sends one email. Not covered: a timeout or out-of-memory kill, which dies before the handler can publish.
 3. ~~**Waiver and injury alerts.**~~ Done: `alert` run (Thu 5pm, Sun 6am/2pm/5pm and Mon 5:30pm CT, each only when a game kicks off within two hours, emails only if a start/bench change is needed) and `waivers` run (Tuesday 8am CT, emails only if there are pickups).
 4. **Bye-week and playoff handling.** Verify the pick'em season-type gate and the lineup Lambda in the offseason and the fantasy playoffs (weeks 15-17), where different logic or silence may be wanted.
 

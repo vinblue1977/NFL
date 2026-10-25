@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import boto3
+from botocore.config import Config
 from pydantic import BaseModel
 
 log = logging.getLogger()
@@ -44,9 +45,11 @@ EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
+FAILURE_TOPIC_ARN = os.environ.get("FAILURE_TOPIC_ARN", "")
 
 ssm = boto3.client("ssm")
 ses = boto3.client("sesv2")
+sns = boto3.client("sns", config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}))
 
 
 # ---------------------------------------------------------------- ESPN data
@@ -481,7 +484,35 @@ def send_email(subject, picks, games, notes, summary):
 # ---------------------------------------------------------------- handler
 
 
+def notify_failure(event, exc):
+    """Plain-text email through SNS (independent of SES); never raises, so the original error survives."""
+    if not FAILURE_TOPIC_ARN:
+        return
+    try:
+        sns.publish(
+            TopicArn=FAILURE_TOPIC_ARN,
+            Subject="nfl-pickem failed - no pick'em email sent",
+            Message=(
+                "The pick'em run failed, so no email went out.\n\n"
+                f"Event: {json.dumps(event, default=str)[:500]}\n"
+                f"Error: {type(exc).__name__}: {str(exc)[:2000]}\n\n"
+                "Check the /aws/lambda/nfl-pickem logs."
+            ),
+        )
+    except Exception:
+        log.exception("failure notification failed")
+
+
 def handler(event, context):
+    try:
+        return run_pickem(event)
+    except Exception as exc:
+        log.exception("pick'em run failed")
+        notify_failure(event, exc)
+        raise
+
+
+def run_pickem(event):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
     run = event.get("run") or ("thursday" if now_ct.weekday() == 3 else "sunday")
