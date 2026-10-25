@@ -12,5 +12,8 @@
 
 ## Deploying
 
-- The stack is deployed by hand: `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh [Param=value ...]` (needs `aws login`). Deploy after the PR merges, from an up-to-date main.
-- `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly.
+- A merge to main deploys automatically: the `deploy` job in `ci.yml` runs `./deploy.sh` after the checks pass, in the `production` environment (main only) using GitHub OIDC. Every push to main deploys (an unchanged package is a no-op; the deploy step skips itself, with a warning annotation, if its commit is no longer the head of main, so a forced run from an old commit does nothing), so a failed deploy is retried by the next push; `gh workflow run ci.yml --ref main` forces one.
+- The deploy role is a separate stack, `nfl-pickem-deploy-role` (`deploy-role.yaml`), deployed once by hand (the command is in the file). Its ARN is the `AWS_DEPLOY_ROLE_ARN` secret in the `production` environment. Change it only with admin credentials (`aws login`).
+- Manual fallback: `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh [Param=value ...]`.
+- `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly (manual deploys), or set it in the stack once by hand.
+- Don't rename a resource's logical ID while keeping its fixed `Name:` (schedules, functions): CloudFormation creates the new one before deleting the old and fails on the name conflict.

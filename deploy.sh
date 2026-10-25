@@ -11,11 +11,14 @@ BUCKET=nfl-pickem-artifacts-$ACCOUNT-$REGION
 
 rm -rf build && mkdir build
 # Linux/arm64 wheels for the Lambda runtime, regardless of the local machine.
-python3 -m pip install -q --require-hashes -r requirements.txt -t build \
+# --no-compile keeps .pyc files (which embed mtimes) out of the zip.
+python3 -m pip install -q --no-compile --require-hashes -r requirements.txt -t build \
   --platform manylinux2014_aarch64 --implementation cp --python-version 3.14 --only-binary=:all:
 # The Lambda runtime already ships boto3/botocore; don't bundle a second copy.
 rm -rf build/{boto3,botocore,s3transfer,jmespath}{,-*.dist-info}
 cp src/*.py build/
+# `cloudformation package` keys the zip on file mtimes too; fix them so identical code gets an identical key (a no-op deploy).
+find build -exec env TZ=UTC touch -h -t 200001010000 {} +
 
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
   aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \

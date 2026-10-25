@@ -17,7 +17,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# There is no deploy job: the stack is deployed by hand with ./deploy.sh (see CLAUDE.md).
+# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a no-op), using GitHub
+# OIDC -> short-lived AWS credentials. A run whose commit is no longer the head of main skips its deploy step with a warning.
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
@@ -72,3 +73,50 @@ jobs:
           version: "1.30.1"
           advanced-security: false  # findings as PR annotations, not uploaded to code scanning
           annotations: true
+
+  deploy:
+    needs: [python, workflow-lint]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 30
+    environment: production   # deployment branches: main only (repo settings)
+    permissions:
+      contents: read
+      id-token: write   # GitHub OIDC -> short-lived AWS credentials, no stored access keys
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check this commit is still the head of main
+        id: head
+        # Deploys are serialized but not ordered, and this job may have queued behind another one, so check right
+        # before deploying. If a newer commit's checks fail, fix forward: the next push deploys.
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+          [ -n "$head" ] || { echo "::error::Could not read the head of main."; exit 1; }
+          if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
+          else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        if: steps.head.outputs.current == 'true'
+        with:
+          python-version: "3.14"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        if: steps.head.outputs.current == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2  # the deploy role's permissions are scoped to this region
+          mask-aws-account-id: true  # logs are visible to anyone with repo access
+      - name: Deploy and check
+        if: steps.head.outputs.current == 'true'
+        run: |
+          ./deploy.sh
+          for fn in nfl-pickem nfl-fantasy-lineup; do
+            info="$(aws lambda get-function --function-name "$fn" --query Configuration --output json)"
+            echo "$fn: $(jq -r '[.State, .LastUpdateStatus, .LastModified] | join(" ")' <<<"$info")"
+            jq -e '.State == "Active" and .LastUpdateStatus == "Successful"' <<<"$info" >/dev/null
+          done
