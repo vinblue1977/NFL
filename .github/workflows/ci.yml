@@ -101,9 +101,13 @@ jobs:
           [ -n "$head" ] || { echo "::error::Could not read the head of main."; exit 1; }
           if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
           else
-            # Docs-only pushes start no run, so a newer head that changed only *.md files is the same code as this commit.
-            code="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head" --jq '[.files[].filename | select(endswith(".md") | not)] | length')"
-            if [ "$code" = "0" ]; then echo "Only docs changed since this commit; deploying it."; echo "current=true" >> "$GITHUB_OUTPUT"
+            # Docs-only pushes start no run, so a newer head that only added *.md files is the same code as this commit.
+            # Keep "*.md" here in step with paths-ignore above. Any API error, or a head that isn't strictly ahead, falls back to skipping.
+            compare="repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head"
+            if [ "$(gh api "$compare" --jq .status)" = "ahead" ] \
+              && names="$(gh api --paginate "$compare" --jq '.files[]?.filename')" \
+              && ! printf '%s' "$names" | grep -qv '\.md$'; then
+              echo "Only docs changed since this commit; deploying it."; echo "current=true" >> "$GITHUB_OUTPUT"
             else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
           fi
         env:
