@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import re
 import statistics
 import urllib.parse
 import urllib.request
@@ -44,6 +45,7 @@ MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
+ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
 HEARTBEAT_PREFIX = os.environ.get("HEARTBEAT_PARAM_PREFIX", "/nfl-pickem/heartbeat")
 RESULTS_PARAM = os.environ.get("RESULTS_PARAM", "/nfl-pickem/results")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
@@ -314,6 +316,31 @@ def load_param(name, default):
 
 def save_param(name, value):
     ssm.put_parameter(Name=name, Value=json.dumps(value), Type="String", Overwrite=True)
+
+
+WEEK_RECORD = re.compile(r"(\d+)-w(\d+)")
+
+
+def prune_state(season, week):
+    """Delete the per-week records (locks, saved picks, sent alerts) from before last week of this season or earlier.
+
+    Last week's picks are still needed to score it, so they stay until next week. The season results are kept.
+    """
+    keep_from = (season, week - 1)
+    for prefix in (STATE_PREFIX, PICKS_PREFIX, ALERT_PREFIX):
+        try:
+            old = []
+            for page in ssm.get_paginator("get_parameters_by_path").paginate(Path=prefix):
+                for param in page["Parameters"]:
+                    match = WEEK_RECORD.fullmatch(param["Name"].rsplit("/", 1)[1])
+                    if match and (int(match[1]), int(match[2])) < keep_from:
+                        old.append(param["Name"])
+            for i in range(0, len(old), 10):  # delete_parameters takes at most 10 names
+                ssm.delete_parameters(Names=old[i : i + 10])
+            if old:
+                log.info("pruned %d old record(s) under %s", len(old), prefix)
+        except Exception:  # one prefix failing must not stop the others
+            log.exception("couldn't prune %s", prefix)
 
 
 def record_picks(season, week, picks, ai):
@@ -635,6 +662,8 @@ def run_pickem(event):
         return {"status": "off season"}
     season = sb.get("season", {}).get("year", now_ct.year)
     week = sb.get("week", {}).get("number")
+    if run == "thursday" and not test:
+        prune_state(season, week)  # weekly housekeeping first, so early exits below can't skip it
     games = parse_games(sb)
     if not games:
         log.info("no games on the scoreboard; nothing to do")
