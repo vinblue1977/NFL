@@ -294,15 +294,11 @@ def state_name(season, week):
 
 
 def load_locked(season, week):
-    try:
-        val = ssm.get_parameter(Name=state_name(season, week))["Parameter"]["Value"]
-        return json.loads(val)
-    except ssm.exceptions.ParameterNotFound:
-        return {}
+    return load_param(state_name(season, week), {})
 
 
 def save_locked(season, week, locked):
-    ssm.put_parameter(Name=state_name(season, week), Value=json.dumps(locked), Type="String", Overwrite=True)
+    save_param(state_name(season, week), locked)
 
 
 # ------------------------------------------------------- results tracking
@@ -322,9 +318,8 @@ def save_param(name, value):
 def record_picks(season, week, picks, ai):
     """Remember what was emailed (Thursday and Sunday add to the same week) so it can be scored later."""
     name = f"{PICKS_PREFIX}/{season}-w{week}"
-    rec = load_param(name, {"ai": False, "picks": {}})
-    rec["picks"].update({p.game_id: {"winner": p.winner, "confidence": p.confidence} for p in picks})
-    rec["ai"] = rec["ai"] or ai
+    rec = load_param(name, {"picks": {}})
+    rec["picks"].update({p.game_id: {"winner": p.winner, "confidence": p.confidence, "ai": ai} for p in picks})
     save_param(name, rec)
 
 
@@ -347,16 +342,21 @@ def score_week(season, week):
     rec = load_param(f"{PICKS_PREFIX}/{season}-w{week}", None)
     if not rec or not rec["picks"]:
         return
-    winners = final_winners(fetch(f"scoreboard?week={week}&seasontype={REGULAR_SEASON}"))
-    if any(gid not in winners for gid in rec["picks"]):
-        return  # not all over yet (or ESPN dropped a game)
+    winners = final_winners(fetch(f"scoreboard?dates={season}&seasontype={REGULAR_SEASON}&week={week}"))
+    waiting = [gid for gid in rec["picks"] if gid not in winners]
+    if waiting:
+        log.info("week %s not scored yet: %d picked game(s) not final or not on the scoreboard", week, len(waiting))
+        return
     right = {gid: p for gid, p in rec["picks"].items() if winners[gid] == p["winner"]}
+
+    def tally(picks):
+        return {"correct": sum(gid in right for gid in picks), "total": len(picks)}
+
     results[str(week)] = {
-        "correct": len(right),
-        "total": len(rec["picks"]),
+        **tally(rec["picks"]),
         "points": sum(p["confidence"] for p in right.values()),
         "possible": sum(p["confidence"] for p in rec["picks"].values()),
-        "ai": rec["ai"],
+        "ai": tally({gid: p for gid, p in rec["picks"].items() if p.get("ai")}),
     }
     save_param(f"{RESULTS_PARAM}/{season}", results)
 
@@ -369,23 +369,23 @@ def record_line(season, week):
         return ""
     line = f"Week {week}: {last['correct']}/{last['total']} correct, {last['points']}/{last['possible']} points"
     if len(results) > 1:
+        total = {k: sum(r[k] for r in results.values()) for k in ("correct", "total", "points", "possible")}
         line += (
-            f". Season ({len(results)} weeks): {sum(r['correct'] for r in results.values())}/"
-            f"{sum(r['total'] for r in results.values())} correct, {sum(r['points'] for r in results.values())} points"
+            f". Season ({len(results)} scored weeks): {total['correct']}/{total['total']} correct, "
+            f"{total['points']}/{total['possible']} points"
         )
-    modes = {ai: [r for r in results.values() if r["ai"] == ai] for ai in (False, True)}
-    if all(modes.values()):  # both kinds of week on record: show how they compare
-        line += ". " + "; ".join(
-            f"{'AI' if ai else 'Odds'} weeks: {sum(r['correct'] for r in rs)}/{sum(r['total'] for r in rs)} correct"
-            for ai, rs in modes.items()
-        )
+    ai = {k: sum(r["ai"][k] for r in results.values()) for k in ("correct", "total")}
+    odds = {k: sum(r[k] - r["ai"][k] for r in results.values()) for k in ("correct", "total")}
+    if ai["total"] and odds["total"]:  # both kinds of pick on record: show how they compare
+        line += f". Odds picks: {odds['correct']}/{odds['total']} correct; AI picks: {ai['correct']}/{ai['total']} correct"
     return line + "."
 
 
-def last_week_record(season, week):
+def last_week_record(season, week, score=True):
     """Score the previous week if it just finished and describe it; never lets a tracking problem block the email."""
     try:
-        score_week(season, week - 1)
+        if score:  # test runs report the record but leave no trace
+            score_week(season, week - 1)
         return record_line(season, week - 1)
     except Exception:
         log.exception("couldn't score last week")
@@ -685,7 +685,7 @@ def run_pickem(event):
 
     label = "Thursday" if run == "thursday" else "Sunday/Monday"
     subject = f"{'[TEST] ' if test else ''}NFL Week {week} Pick'em - {label}"
-    send_email(subject, picks, games, notes, summary, last_week_record(season, week))
+    send_email(subject, picks, games, notes, summary, last_week_record(season, week, score=not test))
     if not test:
         try:
             record_picks(season, week, picks, ai_used)

@@ -33,7 +33,10 @@ class TestRecordPicks:
         app.record_picks(2026, 7, [pick("g1", "KC", 3)], ai=False)
         app.record_picks(2026, 7, [pick("g2", "LV", 2)], ai=True)
         rec = app.load_param("/nfl-pickem/picks/2026-w7", None)
-        assert rec == {"ai": True, "picks": {"g1": {"winner": "KC", "confidence": 3}, "g2": {"winner": "LV", "confidence": 2}}}
+        assert rec["picks"] == {
+            "g1": {"winner": "KC", "confidence": 3, "ai": False},
+            "g2": {"winner": "LV", "confidence": 2, "ai": True},
+        }
 
 
 class TestFinalWinners:
@@ -55,9 +58,9 @@ class TestScoreWeek:
             "total": 3,
             "points": 4,
             "possible": 6,
-            "ai": False,
+            "ai": {"correct": 0, "total": 0},
         }
-        assert "week=6" in asked[0] and "seasontype=2" in asked[0]
+        assert "week=6" in asked[0] and "seasontype=2" in asked[0] and "dates=2026" in asked[0]
 
     def test_a_tie_counts_as_wrong(self, store, monkeypatch):
         self.saved(store)
@@ -70,6 +73,14 @@ class TestScoreWeek:
         board(monkeypatch, final("1", "KC"), final("2", "KC"), final("3", "KC", completed=False))
         app.score_week(2026, 6)
         assert app.load_param("/nfl-pickem/results/2026", {}) == {}
+
+    def test_mixed_week_counts_ai_picks_separately(self, store, monkeypatch):
+        app.record_picks(2026, 6, [pick("1", "KC", 3)], ai=True)
+        app.record_picks(2026, 6, [pick("2", "KC", 2)], ai=False)
+        board(monkeypatch, final("1", "KC"), final("2", "LV"))
+        app.score_week(2026, 6)
+        week = app.load_param("/nfl-pickem/results/2026", {})["6"]
+        assert (week["correct"], week["total"], week["ai"]) == (1, 2, {"correct": 1, "total": 1})
 
     def test_scores_once_and_ignores_weeks_without_picks(self, store, monkeypatch):
         asked = board(monkeypatch)
@@ -87,8 +98,14 @@ class TestRecordLine:
     def put(self, store, **weeks):
         app.save_param("/nfl-pickem/results/2026", {w.removeprefix("w"): r for w, r in weeks.items()})
 
-    def r(self, correct, total, points, possible, ai=False):
-        return {"correct": correct, "total": total, "points": points, "possible": possible, "ai": ai}
+    def r(self, correct, total, points, possible, ai=(0, 0)):
+        return {
+            "correct": correct,
+            "total": total,
+            "points": points,
+            "possible": possible,
+            "ai": {"correct": ai[0], "total": ai[1]},
+        }
 
     def test_empty_when_the_week_was_not_scored(self, store):
         assert app.record_line(2026, 6) == ""
@@ -98,10 +115,10 @@ class TestRecordLine:
         assert app.record_line(2026, 6) == "Week 6: 11/14 correct, 87/105 points."
 
     def test_adds_season_total_and_ai_vs_odds_when_both_exist(self, store):
-        self.put(store, w5=self.r(10, 14, 70, 105, ai=True), w6=self.r(11, 14, 87, 105))
+        self.put(store, w5=self.r(10, 14, 70, 105, ai=(10, 14)), w6=self.r(11, 14, 87, 105))
         assert app.record_line(2026, 6) == (
-            "Week 6: 11/14 correct, 87/105 points. Season (2 weeks): 21/28 correct, 157 points. "
-            "Odds weeks: 11/14 correct; AI weeks: 10/14 correct."
+            "Week 6: 11/14 correct, 87/105 points. Season (2 scored weeks): 21/28 correct, 157/210 points. "
+            "Odds picks: 11/14 correct; AI picks: 10/14 correct."
         )
 
     def test_last_week_record_scores_then_reports_and_never_raises(self, store, monkeypatch):
@@ -110,6 +127,11 @@ class TestRecordLine:
         assert app.last_week_record(2026, 7) == "Week 6: 1/1 correct, 1/1 points."
         monkeypatch.setattr(app, "score_week", lambda *a: (_ for _ in ()).throw(OSError("espn down")))
         assert app.last_week_record(2026, 7) == ""
+
+    def test_test_runs_report_but_do_not_score(self, store, monkeypatch):
+        app.record_picks(2026, 6, [pick("1", "KC", 1)], ai=False)
+        asked = board(monkeypatch, final("1", "KC"))
+        assert app.last_week_record(2026, 7, score=False) == "" and not asked
 
 
 def test_email_shows_the_record_first(monkeypatch):

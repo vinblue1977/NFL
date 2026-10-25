@@ -9,7 +9,7 @@
 
 ## Nice to have
 
-5. ~~**Pick'em results tracking.**~~ Done: each sent pick sheet is saved in SSM (`/nfl-pickem/picks/<season>-w<week>`); the next Thursday/Sunday run scores last week once its games are final (`/nfl-pickem/results/<season>`) and the email opens with "Week 6: 11/14 correct, 87/105 points. Season ...". Once there are AI weeks and odds weeks it also compares them. A tie counts as wrong; a week with a hand-made pick isn't scored for that game.
+5. ~~**Pick'em results tracking.**~~ Done: each sent pick sheet is saved in SSM (`/nfl-pickem/picks/<season>-w<week>`); the next Thursday/Sunday run scores last week once its games are final (`/nfl-pickem/results/<season>`) and the email opens with "Week 6: 11/14 correct, 87/105 points. Season ...". Once there are both AI and odds picks it also compares them (flagged per pick). A tie counts as wrong; a week waits (logged) until every picked game is final.
 6. **Trade suggestions.** Extend the pickup logic to look at other teams' rosters in the 9-team league.
 7. **README and cost notes.** Document the SSM params, the gotchas (deploy keeps previous parameter values, `AWS_BEARER_TOKEN_BEDROCK` in the shell) and the expected cost per week.
 8. ~~**CI.**~~ Done, mirrored from TennisTracker: ruff, cfn-lint, pytest, pip-audit, actionlint/zizmor, Dependabot, PR-title check. Merges to main deploy through a `production` environment with a GitHub OIDC role (`deploy-role.yaml`); no dependency-review job (needs GitHub Advanced Security: add it back if the repo goes public); add one with GitHub OIDC if wanted.
