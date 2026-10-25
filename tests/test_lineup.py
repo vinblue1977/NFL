@@ -387,3 +387,103 @@ class TestWaiverRun:
         monkeypatch.setattr(lineup, "waiver_run", lambda *a: {"status": "ok"})
         lineup.handler({"run": "waivers"}, None)
         assert seen["week"] == 8
+
+
+class FakeSsm:
+    """In-memory stand-in for the SSM client's get/put parameter calls."""
+
+    class exceptions:
+        class ParameterNotFound(Exception):
+            pass
+
+    def __init__(self):
+        self.values = {}
+
+    def get_parameter(self, Name, **kw):
+        if Name not in self.values:
+            raise self.exceptions.ParameterNotFound(Name)
+        return {"Parameter": {"Value": self.values[Name]}}
+
+    def put_parameter(self, Name, Value, **kw):
+        self.values[Name] = Value
+
+
+class TestAlertDedupe:
+    @pytest.fixture
+    def store(self, monkeypatch):
+        fake = FakeSsm()
+        monkeypatch.setattr(lineup, "ssm", fake)
+        return fake
+
+    def test_first_alert_is_new_and_repeat_is_not(self, store):
+        assert lineup.alert_changed(2026, 7, ["Start A at QB"])
+        lineup.remember_alert(2026, 7, ["Start A at QB"])
+        assert not lineup.alert_changed(2026, 7, ["Start A at QB"])
+
+    def test_order_does_not_matter_but_new_moves_do(self, store):
+        lineup.remember_alert(2026, 7, ["Start A at QB", "Bench B"])
+        assert not lineup.alert_changed(2026, 7, ["Bench B", "Start A at QB"])
+        assert lineup.alert_changed(2026, 7, ["Start A at QB", "Bench B", "Bench C"])
+
+    def test_clean_lineup_clears_so_a_returning_problem_alerts_again(self, store):
+        lineup.remember_alert(2026, 7, ["Bench B"])
+        assert not lineup.alert_changed(2026, 7, [])
+        assert lineup.alert_changed(2026, 7, ["Bench B"])
+
+    def test_weeks_are_independent(self, store):
+        lineup.remember_alert(2026, 7, ["Bench B"])
+        assert lineup.alert_changed(2026, 8, ["Bench B"])
+
+
+class TestAlertHandler:
+    """The alert run emails a start/bench change once, not at every alert."""
+
+    @pytest.fixture
+    def setup(self, monkeypatch):
+        fake = FakeSsm()
+        sent = []
+        now = datetime.now(lineup.CENTRAL)
+        qb = player(1, "QB", 20, slot=BENCH)
+        qb["game"]["kickoff_ct"] = now + timedelta(minutes=60)
+        monkeypatch.setattr(lineup, "ssm", fake)
+        monkeypatch.setattr(lineup, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        monkeypatch.setattr(lineup, "parse_games", lambda sb: [qb["game"]])
+        monkeypatch.setattr(lineup, "fetch_league", lambda season, week: ({}, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda *a: {"name": "Team"})
+        monkeypatch.setattr(lineup, "lineup_slots", lambda *a: [("QB", 0)])
+        monkeypatch.setattr(lineup, "players", lambda *a: [qb])
+        monkeypatch.setattr(lineup, "USE_AI", False)
+        monkeypatch.setattr(lineup, "send_email", lambda *a: sent.append(a))
+        return fake, sent, qb
+
+    def test_same_move_is_emailed_once(self, setup):
+        _, sent, _ = setup
+        assert lineup.handler({"run": "alert"}, None)["status"] == "sent"
+        assert lineup.handler({"run": "alert"}, None)["status"] == "unchanged"
+        assert len(sent) == 1
+
+    def test_fixed_lineup_clears_and_the_problem_alerts_again(self, setup):
+        _, sent, qb = setup
+        lineup.handler({"run": "alert"}, None)
+        qb["slot"] = 0  # you started him
+        assert lineup.handler({"run": "alert"}, None)["status"] == "no changes"
+        qb["slot"] = BENCH  # and then benched him again
+        assert lineup.handler({"run": "alert"}, None)["status"] == "sent"
+        assert len(sent) == 2
+
+    def test_failed_email_is_not_remembered(self, setup, monkeypatch):
+        fake, _, _ = setup
+
+        def boom(*a):
+            raise RuntimeError("ses down")
+
+        monkeypatch.setattr(lineup, "send_email", boom)
+        with pytest.raises(RuntimeError):
+            lineup.handler({"run": "alert"}, None)
+        assert not fake.values
+
+    def test_test_runs_neither_dedupe_nor_save(self, setup):
+        fake, sent, _ = setup
+        lineup.handler({"run": "alert", "test": True}, None)
+        lineup.handler({"run": "alert", "test": True}, None)
+        assert len(sent) == 2 and not fake.values
