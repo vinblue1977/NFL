@@ -135,7 +135,7 @@ Resources:
                 Action: sns:Publish
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
               - Effect: Allow
-                Action: [ssm:GetParameter, ssm:PutParameter]
+                Action: [ssm:GetParameter, ssm:GetParametersByPath, ssm:PutParameter, ssm:DeleteParameters]
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/*
 
   PickemFunction:

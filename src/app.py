@@ -44,6 +44,7 @@ MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
+ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
 HEARTBEAT_PREFIX = os.environ.get("HEARTBEAT_PARAM_PREFIX", "/nfl-pickem/heartbeat")
 RESULTS_PARAM = os.environ.get("RESULTS_PARAM", "/nfl-pickem/results")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
@@ -314,6 +315,28 @@ def load_param(name, default):
 
 def save_param(name, value):
     ssm.put_parameter(Name=name, Value=json.dumps(value), Type="String", Overwrite=True)
+
+
+def prune_state(season, week):
+    """Delete the per-week records (locks, saved picks, sent alerts) from before last week.
+
+    Last week's picks are still needed to score it, so they stay until next week. The season results are kept.
+    """
+    keep_from = (season, week - 1)
+    for prefix in (STATE_PREFIX, PICKS_PREFIX, ALERT_PREFIX):
+        old = []
+        for page in ssm.get_paginator("get_parameters_by_path").paginate(Path=prefix):
+            for param in page["Parameters"]:
+                try:
+                    year, wk = param["Name"].rsplit("/", 1)[1].split("-w")
+                    if (int(year), int(wk)) < keep_from:
+                        old.append(param["Name"])
+                except ValueError:
+                    log.warning("not a per-week record, leaving it: %s", param["Name"])
+        for i in range(0, len(old), 10):  # delete_parameters takes at most 10 names
+            ssm.delete_parameters(Names=old[i : i + 10])
+        if old:
+            log.info("pruned %d old record(s) under %s", len(old), prefix)
 
 
 def record_picks(season, week, picks, ai):
@@ -717,5 +740,9 @@ def run_pickem(event):
         for p in picks:
             locked[p.game_id] = {"winner": p.winner, "confidence": p.confidence}
         save_locked(season, week, locked)
+        try:  # weekly housekeeping, once the week's email and lock are safely done
+            prune_state(season, week)
+        except Exception:
+            log.exception("couldn't prune old records")
     log.info("sent %d picks for week %s (%s)", len(picks), week, run)
     return {"status": "sent", "week": week, "run": run, "picks": [p.model_dump() for p in picks]}

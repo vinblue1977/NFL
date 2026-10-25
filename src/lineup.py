@@ -31,6 +31,7 @@ from functools import cache
 from pydantic import BaseModel
 
 from app import (
+    ALERT_PREFIX,
     CENTRAL,
     MODEL_ID,
     REGULAR_SEASON,
@@ -58,7 +59,6 @@ S2_PARAM = os.environ.get("ESPN_S2_PARAM", "/nfl-pickem/espn-s2")
 SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
 ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
-ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
 COOKIE_ALERT_PARAM = os.environ.get("COOKIE_ALERT_PARAM", "/nfl-pickem/cookie-alert")
 COOKIE_ALERT_GAP = timedelta(hours=20)  # one warning a day, not one per run
 FUNCTION = "nfl-fantasy-lineup"

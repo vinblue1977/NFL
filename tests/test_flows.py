@@ -380,3 +380,24 @@ class TestPickemRecording:
     def test_a_recording_failure_does_not_fail_the_run(self, fake, monkeypatch):
         monkeypatch.setattr(app, "record_picks", lambda *a: (_ for _ in ()).throw(RuntimeError("ssm down")))
         assert app.run_pickem({"run": "sunday"})["status"] == "sent"
+
+
+class TestPickemPruning:
+    def test_thursday_run_prunes_but_sunday_and_test_runs_do_not(self, monkeypatch, fake_ssm):
+        pruned = []
+        monkeypatch.setattr(app, "prune_state", lambda season, week: pruned.append((season, week)))
+        monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        thursday_game = pgame("g1", "KC", "LV", 0, fav="KC", fav_by=7)
+        thursday_game["kickoff_ct"] = datetime(2026, 10, 22, 20, tzinfo=lineup.CENTRAL)
+        monkeypatch.setattr(app, "parse_games", lambda sb: [thursday_game])
+        monkeypatch.setattr(app, "add_kalshi", lambda games: 0)
+        monkeypatch.setattr(app, "odds_api_key", lambda: None)
+        monkeypatch.setattr(app, "send_email", lambda *a: None)
+        monkeypatch.setattr(app, "USE_AI", False)
+        app.run_pickem({"run": "thursday", "test": True})
+        assert not pruned
+        app.run_pickem({"run": "thursday"})
+        assert pruned == [(2026, 7)]
+        monkeypatch.setattr(app, "prune_state", lambda *a: (_ for _ in ()).throw(OSError("denied")))
+        fake_ssm.values.clear()  # forget the Thursday lock so the game is up for picking again
+        assert app.run_pickem({"run": "thursday"})["status"] == "sent"  # housekeeping never fails the run

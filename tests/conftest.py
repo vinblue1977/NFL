@@ -65,6 +65,22 @@ class FakeSsm:
     def put_parameter(self, Name, Value, **kw):
         self.values[Name] = Value
 
+    def get_paginator(self, operation):
+        assert operation == "get_parameters_by_path"
+        return self
+
+    def paginate(self, Path):
+        """One page holding the direct children of Path, as get_parameters_by_path returns them."""
+        kids = [
+            {"Name": n, "Value": v} for n, v in self.values.items() if n.startswith(Path + "/") and "/" not in n[len(Path) + 1 :]
+        ]
+        yield {"Parameters": kids}
+
+    def delete_parameters(self, Names):
+        assert len(Names) <= 10
+        for name in Names:
+            self.values.pop(name, None)
+
 
 @pytest.fixture(autouse=True)
 def fake_ssm(monkeypatch):
