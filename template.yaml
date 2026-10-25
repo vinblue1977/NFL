@@ -196,11 +196,34 @@ Resources:
           LINEUP_USE_AI: !Ref LineupUseAI
           ESPN_S2_PARAM: /nfl-pickem/espn-s2
           ESPN_SWID_PARAM: /nfl-pickem/espn-swid
+          FAILURE_TOPIC_ARN: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
 
   LineupLogs:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/nfl-fantasy-lineup
+      RetentionInDays: 30
+
+  # Emails when a run never finished (timeout, out of memory, no invoke), which the handlers can't report themselves.
+  WatchdogFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nfl-watchdog
+      Runtime: python3.14
+      Architectures: [arm64]
+      Handler: watchdog.handler
+      Code: build/
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          FAILURE_TOPIC_ARN: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
+
+  WatchdogLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/nfl-watchdog
       RetentionInDays: 30
 
   SchedulerRole:
@@ -222,6 +245,7 @@ Resources:
                 Resource:
                   - !GetAtt PickemFunction.Arn
                   - !GetAtt LineupFunction.Arn
+                  - !GetAtt WatchdogFunction.Arn
 
   ThursdayRun:
     Type: AWS::Scheduler::Schedule
@@ -356,6 +380,33 @@ Resources:
         Arn: !GetAtt LineupFunction.Arn
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "waivers"}'
+
+  # Checks a few hours after each expected run. If a run's time parameter moves, move these with it.
+  PickemWatchdog:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-watchdog-pickem
+      Description: Pick'em runs Thu 8:00 and Sun 6:00 CT; check at 10:00.
+      ScheduleExpression: cron(0 10 ? * THU,SUN *)
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt WatchdogFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"function": "nfl-pickem", "max_age_hours": 5}'
+
+  LineupWatchdog:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-watchdog-lineup
+      Description: Lineup runs Tue 8:00, Thu 8:00, Sat 9:00 and Sun 10:45 CT; check at 12:30.
+      ScheduleExpression: cron(30 12 ? * TUE,THU,SAT,SUN *)
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt WatchdogFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"function": "nfl-fantasy-lineup", "max_age_hours": 5}'
 
   # Plain-text "it failed" email through the Comed SNS topic, which doesn't depend on SES.
   LineupErrorAlarm:

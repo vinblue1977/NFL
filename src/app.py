@@ -44,6 +44,7 @@ MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
+HEARTBEAT_PREFIX = os.environ.get("HEARTBEAT_PARAM_PREFIX", "/nfl-pickem/heartbeat")
 RESULTS_PARAM = os.environ.get("RESULTS_PARAM", "/nfl-pickem/results")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -574,32 +575,47 @@ def send_email(subject, picks, games, notes, summary, record=""):
 # ---------------------------------------------------------------- handler
 
 
-def notify_failure(event, exc):
-    """Plain-text email through SNS (independent of SES); never raises, so the original error survives."""
+def notify(subject, message):
+    """Plain-text email through SNS (independent of SES). Never raises; returns whether it was sent."""
     if not FAILURE_TOPIC_ARN:
-        return
+        return False
     try:
-        sns.publish(
-            TopicArn=FAILURE_TOPIC_ARN,
-            Subject="nfl-pickem failed - no pick'em email sent",
-            Message=(
-                "The pick'em run failed, so no email went out.\n\n"
-                f"Event: {json.dumps(event, default=str)[:500]}\n"
-                f"Error: {type(exc).__name__}: {str(exc)[:2000]}\n\n"
-                "Check the /aws/lambda/nfl-pickem logs."
-            ),
+        sns.publish(TopicArn=FAILURE_TOPIC_ARN, Subject=subject[:100], Message=message)
+        return True
+    except Exception:
+        log.exception("notification failed")
+        return False
+
+
+def notify_failure(event, exc):
+    notify(
+        "nfl-pickem failed - no pick'em email sent",
+        "The pick'em run failed, so no email went out.\n\n"
+        f"Event: {json.dumps(event, default=str)[:500]}\n"
+        f"Error: {type(exc).__name__}: {str(exc)[:2000]}\n\n"
+        "Check the /aws/lambda/nfl-pickem logs.",
+    )
+
+
+def heartbeat(function):
+    """Record that a run finished, so the watchdog can tell a run that never completed (timeout, OOM, no invoke)."""
+    try:
+        ssm.put_parameter(
+            Name=f"{HEARTBEAT_PREFIX}/{function}", Value=datetime.now(UTC).isoformat(), Type="String", Overwrite=True
         )
     except Exception:
-        log.exception("failure notification failed")
+        log.exception("couldn't write the heartbeat")
 
 
 def handler(event, context):
     try:
-        return run_pickem(event)
+        result = run_pickem(event)
     except Exception as exc:
         log.exception("pick'em run failed")
         notify_failure(event, exc)
         raise
+    heartbeat("nfl-pickem")
+    return result
 
 
 def run_pickem(event):

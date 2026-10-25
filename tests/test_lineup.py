@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import FakeSsm
 
 import lineup
 from lineup import BENCH, IR
@@ -387,25 +388,6 @@ class TestWaiverRun:
         monkeypatch.setattr(lineup, "waiver_run", lambda *a: {"status": "ok"})
         lineup.handler({"run": "waivers"}, None)
         assert seen["week"] == 8
-
-
-class FakeSsm:
-    """In-memory stand-in for the SSM client's get/put parameter calls."""
-
-    class exceptions:
-        class ParameterNotFound(Exception):
-            pass
-
-    def __init__(self):
-        self.values = {}
-
-    def get_parameter(self, Name, **kw):
-        if Name not in self.values:
-            raise self.exceptions.ParameterNotFound(Name)
-        return {"Parameter": {"Value": self.values[Name]}}
-
-    def put_parameter(self, Name, Value, **kw):
-        self.values[Name] = Value
 
 
 class TestAlertDedupe:
