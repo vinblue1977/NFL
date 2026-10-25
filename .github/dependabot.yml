@@ -1,0 +1,29 @@
+# Weekly update PRs for GitHub Actions (keeps the pinned commit SHAs current) and Python dependencies.
+# Titles follow Conventional Commits ("ci(deps): ...", "build(deps): ...") to pass the PR title check.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7  # skip releases younger than a week (time for a bad release to be caught and pulled)
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+  # Dev tools (requirements-dev.in; hashed lockfile beside it) and the Lambda's runtime packages.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      python:
+        patterns: ["*"]

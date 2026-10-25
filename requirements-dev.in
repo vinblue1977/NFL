@@ -1,0 +1,8 @@
+-r requirements.in
+-c requirements.txt
+pytest>=9.1.1
+pytest-cov>=7.1.0
+ruff>=0.16.10
+pip-audit>=2.10.1
+cfn-lint>=1.40.0
+pip-tools>=7.6.2  # `make lock`

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 13 * * 1"  # weekly, so new advisories against current dependency versions fail `make audit`
+  workflow_dispatch:
+
+# Least privilege by default.
+permissions:
+  contents: read
+
+# Superseded PR runs are cancelled; each run on main gets its own group so none is dropped while pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# There is no deploy job: the stack is deployed by hand with ./deploy.sh (see CLAUDE.md).
+# No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
+# PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
+jobs:
+  python:
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.19"
+          enable-cache: true
+          cache-dependency-glob: requirements*.txt
+      - name: Install Python dependencies (uv; --seed keeps pip in the venv)
+        run: |
+          uv venv --seed --python "$(which python)" .venv
+          uv pip install --python .venv/bin/python --require-hashes -r requirements-dev.txt
+          uv pip check --python .venv/bin/python
+      - name: Lint (ruff with Bandit security rules, cfn-lint)
+        run: make lint
+      - name: Tests
+        run: make test
+      - name: Dependency vulnerability audit
+        run: make audit
+
+  # Lints the workflow files: actionlint (syntax, expressions, shell) and zizmor (Actions security).
+  workflow-lint:
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        # The release binary, checked against its published SHA-256 before it runs.
+        run: |
+          curl -sSfLo actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          # One GitHub annotation per finding (the line break inside the quotes ends each one).
+          # shellcheck disable=SC2016  # $err is actionlint's template variable, not a shell one
+          ./actionlint -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}
+          {{end}}'
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e  # v0.7.1
+        with:
+          inputs: .github
+          version: "1.30.1"
+          advanced-security: false  # findings as PR annotations, not uploaded to code scanning
+          annotations: true

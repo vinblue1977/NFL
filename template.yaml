@@ -62,6 +62,30 @@ Parameters:
     Type: String
     Default: cron(45 10 ? * SUN *)
     Description: Central time. Final lineup, after noon-game inactives are out.
+  AlertThursdaySchedule:
+    Type: String
+    Default: cron(0 18 ? * THU *)
+    Description: Central time. Thursday night game (7:15 CT kickoff; inactives are out about 90 minutes before).
+  AlertSundayMorningSchedule:
+    Type: String
+    Default: cron(15 6 ? * SUN *)
+    Description: Central time. International morning games (7:30 CT kickoff).
+  AlertSundayAfternoonSchedule:
+    Type: String
+    Default: cron(0 14 ? * SUN *)
+    Description: Central time. Late-window games.
+  AlertSundayNightSchedule:
+    Type: String
+    Default: cron(0 18 ? * SUN *)
+    Description: Central time. Sunday night game (7:20 CT kickoff).
+  AlertMondaySchedule:
+    Type: String
+    Default: cron(30 17 ? * MON *)
+    Description: Central time. Monday night game.
+  WaiverSchedule:
+    Type: String
+    Default: cron(0 8 ? * TUE *)
+    Description: Central time. Free-agent/waiver pickups ahead of the Wednesday waiver run; emails only if there are any.
 
 Conditions:
   MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]
@@ -245,6 +269,78 @@ Resources:
         Arn: !GetAtt LineupFunction.Arn
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "sunday"}'
+
+  AlertThursday:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-thursday
+      ScheduleExpression: !Ref AlertThursdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertSundayMorning:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-sunday-morning
+      ScheduleExpression: !Ref AlertSundayMorningSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertSundayAfternoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-sunday
+      ScheduleExpression: !Ref AlertSundayAfternoonSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertSundayNight:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-sunday-night
+      ScheduleExpression: !Ref AlertSundayNightSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertMonday:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-monday
+      ScheduleExpression: !Ref AlertMondaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  WaiverLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-waivers
+      ScheduleExpression: !Ref WaiverSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "waivers"}'
 
   # Plain-text "it failed" email through the Comed SNS topic, which doesn't depend on SES.
   LineupErrorAlarm:
