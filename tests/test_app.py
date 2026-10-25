@@ -177,3 +177,27 @@ class TestPicks:
         assert set(picks) == {"close", "lock", "mid"}
         assert picks["mid"].winner == "DAL"  # first answer for a game wins
         assert picks["lock"].winner == "SF"  # invalid pick replaced by the spread pick
+
+
+def test_handler_notifies_and_reraises_on_failure(monkeypatch):
+    published = []
+    monkeypatch.setattr(app, "FAILURE_TOPIC_ARN", "arn:topic")
+    monkeypatch.setattr(app.sns, "publish", lambda **kw: published.append(kw))
+    monkeypatch.setattr(app, "run_pickem", lambda event: (_ for _ in ()).throw(RuntimeError("espn down")))
+    with pytest.raises(RuntimeError):
+        app.handler({"run": "sunday"}, None)
+    assert published[0]["TopicArn"] == "arn:topic"
+    assert "espn down" in published[0]["Message"]
+    assert len(published[0]["Subject"]) <= 100
+
+
+def test_notify_failure_is_noop_without_topic(monkeypatch):
+    monkeypatch.setattr(app, "FAILURE_TOPIC_ARN", "")
+    monkeypatch.setattr(app.sns, "publish", lambda **kw: pytest.fail("published"))
+    app.notify_failure({}, RuntimeError("x"))
+
+
+def test_notify_failure_swallows_publish_errors(monkeypatch):
+    monkeypatch.setattr(app, "FAILURE_TOPIC_ARN", "arn:topic")
+    monkeypatch.setattr(app.sns, "publish", lambda **kw: (_ for _ in ()).throw(OSError("sns down")))
+    app.notify_failure({}, RuntimeError("x"))

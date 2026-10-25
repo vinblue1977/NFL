@@ -132,6 +132,9 @@ Resources:
                 Action: ses:SendEmail
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
               - Effect: Allow
+                Action: sns:Publish
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
+              - Effect: Allow
                 Action: [ssm:GetParameter, ssm:PutParameter]
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/*
 
@@ -155,6 +158,15 @@ Resources:
           EFFORT: !Ref Effort
           STATE_PARAM_PREFIX: /nfl-pickem/locked
           ODDS_API_KEY_PARAM: /nfl-pickem/odds-api-key
+          FAILURE_TOPIC_ARN: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
+
+  # No async retries: a failed run already emails the failure alert, and a retry would repeat it (and a Thursday send).
+  PickemInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref PickemFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
 
   FunctionLogs:
     Type: AWS::Logs::LogGroup
