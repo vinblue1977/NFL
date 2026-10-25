@@ -294,7 +294,9 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  AlertSundayAfternoon:
+  # Logical IDs LateAlertSunday/LateAlertMonday predate the other alert names; renaming them would make
+  # CloudFormation create the new schedule before deleting the old one, and the fixed Name would conflict.
+  LateAlertSunday:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-sunday
@@ -318,7 +320,7 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  AlertMonday:
+  LateAlertMonday:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-monday
