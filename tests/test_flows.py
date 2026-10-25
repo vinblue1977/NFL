@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from test_lineup import FakeSsm, player
+from conftest import FakeSsm
+from test_lineup import player
 
 import app
 import lineup

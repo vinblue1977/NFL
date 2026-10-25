@@ -1,7 +1,7 @@
 """Results tracking: record what was emailed, score it once the games are final, report it next week."""
 
 import pytest
-from test_lineup import FakeSsm
+from conftest import FakeSsm
 
 import app
 

@@ -22,6 +22,7 @@ import hashlib
 import html
 import json
 import os
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -37,10 +38,14 @@ from app import (
     claude_tool_call,
     deliver,
     fetch,
+    heartbeat,
     injuries_by_team,
+    load_param,
     log,
+    notify,
     parse_games,
     recent_news,
+    save_param,
     ssm,
 )
 
@@ -54,6 +59,9 @@ SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
 ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
 ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
+COOKIE_ALERT_PARAM = os.environ.get("COOKIE_ALERT_PARAM", "/nfl-pickem/cookie-alert")
+COOKIE_ALERT_GAP = timedelta(hours=20)  # one warning a day, not one per run
+FUNCTION = "nfl-fantasy-lineup"
 RUNS = {"thursday", "saturday", "sunday", "alert", "waivers"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
@@ -73,6 +81,10 @@ HEALTHY = {"ACTIVE", "NORMAL", "QUESTIONABLE", "DAY_TO_DAY"}
 # ---------------------------------------------------------------- ESPN league
 
 
+class EspnCookieError(Exception):
+    """The espn_s2/SWID cookies were rejected, so the private league can't be read."""
+
+
 @cache
 def secret(name):
     return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
@@ -83,8 +95,13 @@ def fantasy_get(path, player_filter=None):
     if player_filter:
         headers["X-Fantasy-Filter"] = json.dumps(player_filter)
     req = urllib.request.Request(f"{FANTASY}/{path}", headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):  # ESPN's answer to a missing, wrong or expired espn_s2/SWID
+            raise EspnCookieError(f"ESPN refused the league request (HTTP {exc.code})") from exc
+        raise
 
 
 def fetch_league(season, week):
@@ -715,7 +732,49 @@ def waiver_run(season, week, team, slots, test):
     }
 
 
+def cookie_alert(exc):
+    """Tell me the ESPN cookies need refreshing (at most once a day) instead of failing every run."""
+    try:
+        last = datetime.fromisoformat(load_param(COOKIE_ALERT_PARAM, ""))
+    except ValueError:  # never warned, or a hand-edited value
+        last = None
+    if last and datetime.now(UTC) - last < COOKIE_ALERT_GAP:
+        log.warning("ESPN cookies still rejected; already warned at %s", last)
+        return {"status": "espn cookies still expired"}
+    sent = notify(
+        "nfl-fantasy-lineup: ESPN cookies expired - no lineup email",
+        f"{exc}. The espn_s2 and SWID cookies have probably expired, so no fantasy email can be built.\n\n"
+        "Fix: log in to fantasy.espn.com, copy the espn_s2 and SWID cookies (browser dev tools > Application > Cookies),\n"
+        "then update both SSM parameters in us-east-2:\n"
+        "  aws ssm put-parameter --name /nfl-pickem/espn-s2 --type SecureString --overwrite --value '<espn_s2>'\n"
+        "  aws ssm put-parameter --name /nfl-pickem/espn-swid --type SecureString --overwrite --value '<{SWID}>'\n\n"
+        "You'll get at most one of these emails a day until it's fixed.",
+    )
+    if not sent:
+        raise exc  # no way to tell you, so fail loudly and let the error alarm do it
+    try:
+        save_param(COOKIE_ALERT_PARAM, datetime.now(UTC).isoformat())
+    except Exception:  # the warning went out; a missed save only risks a repeat
+        log.exception("couldn't save the cookie alert time")
+    return {"status": "espn cookies expired"}
+
+
 def handler(event, context):
+    try:
+        result = run_lineup(event)
+    except EspnCookieError as exc:
+        log.exception("ESPN cookies rejected")
+        result = cookie_alert(exc)
+        if result["status"] == "espn cookies still expired":
+            return result  # no heartbeat: the watchdog keeps reminding me at each check until the cookies are fixed
+    except Exception:
+        heartbeat(FUNCTION, event)  # already reported by the error alarm
+        raise
+    heartbeat(FUNCTION, event)
+    return result
+
+
+def run_lineup(event):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
     run = event.get("run") or {1: "waivers", 3: "thursday", 5: "saturday"}.get(now_ct.weekday(), "sunday")

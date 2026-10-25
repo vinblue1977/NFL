@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("RECIPIENT_EMAIL", "to@example.com")
 os.environ.setdefault("SENDER_EMAIL", "from@example.com")
 os.environ.setdefault("LEAGUE_ID", "1")
+os.environ.setdefault("FAILURE_TOPIC_ARN", "arn:aws:sns:us-east-2:1:topic")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
@@ -44,3 +45,36 @@ def http(monkeypatch):
         return seen
 
     return install
+
+
+class FakeSsm:
+    """In-memory stand-in for the SSM client's get/put parameter calls."""
+
+    class exceptions:
+        class ParameterNotFound(Exception):
+            pass
+
+    def __init__(self):
+        self.values = {}
+
+    def get_parameter(self, Name, **kw):
+        if Name not in self.values:
+            raise self.exceptions.ParameterNotFound(Name)
+        return {"Parameter": {"Value": self.values[Name]}}
+
+    def put_parameter(self, Name, Value, **kw):
+        self.values[Name] = Value
+
+
+@pytest.fixture(autouse=True)
+def fake_ssm(monkeypatch):
+    """Never let a test reach real SSM; tests that care read the store from this fixture or install their own."""
+    import app
+    import lineup
+    import watchdog
+
+    fake = FakeSsm()
+    monkeypatch.setattr(app, "ssm", fake)
+    monkeypatch.setattr(lineup, "ssm", fake)
+    monkeypatch.setattr(watchdog, "ssm", fake)
+    return fake
