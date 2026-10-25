@@ -12,5 +12,5 @@
 5. **Pick'em results tracking.** Store each week's picks (SSM or DynamoDB), score them after the games, and include "last week: 11/14, 87 points" in the next email. Shows whether the Kalshi picks are working.
 6. **Trade suggestions.** Extend the pickup logic to look at other teams' rosters in the 9-team league.
 7. **README and cost notes.** Document the SSM params, the gotchas (deploy keeps previous parameter values, `AWS_BEARER_TOKEN_BEDROCK` in the shell) and the expected cost per week.
-8. ~~**CI.**~~ Done, mirrored from TennisTracker: ruff, cfn-lint, pytest, pip-audit, actionlint/zizmor, Dependabot, PR-title check. No deploy job (deploys are manual via `./deploy.sh`); add one with GitHub OIDC if wanted.
+8. ~~**CI.**~~ Done, mirrored from TennisTracker: ruff, cfn-lint, pytest, pip-audit, actionlint/zizmor, Dependabot, PR-title check. No deploy job (deploys are manual via `./deploy.sh`) and no dependency-review job (needs GitHub Advanced Security: add it back if the repo goes public); add one with GitHub OIDC if wanted.
 9. **Smarter alerts.** Alerts compare against your current ESPN lineup, so an ignored recommendation repeats at the next alert. Save the last recommendation (SSM) and email only when it changes.

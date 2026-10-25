@@ -18,7 +18,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # There is no deploy job: the stack is deployed by hand with ./deploy.sh (see CLAUDE.md).
-# No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks; `make audit` covers it.
+# No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
+# PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
   python:
     runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
