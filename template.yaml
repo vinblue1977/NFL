@@ -64,20 +64,20 @@ Parameters:
     Description: Central time. Final lineup, after noon-game inactives are out.
   AlertThursdaySchedule:
     Type: String
-    Default: cron(0 17 ? * THU *)
-    Description: Central time. Thursday night inactives (about 90 minutes before kickoff).
+    Default: cron(0 18 ? * THU *)
+    Description: Central time. Thursday night game (7:15 CT kickoff; inactives are out about 90 minutes before).
   AlertSundayMorningSchedule:
     Type: String
-    Default: cron(0 6 ? * SUN *)
-    Description: Central time. International morning games.
+    Default: cron(15 6 ? * SUN *)
+    Description: Central time. International morning games (7:30 CT kickoff).
   AlertSundayAfternoonSchedule:
     Type: String
     Default: cron(0 14 ? * SUN *)
     Description: Central time. Late-window games.
   AlertSundayNightSchedule:
     Type: String
-    Default: cron(0 17 ? * SUN *)
-    Description: Central time. Sunday night game.
+    Default: cron(0 18 ? * SUN *)
+    Description: Central time. Sunday night game (7:20 CT kickoff).
   AlertMondaySchedule:
     Type: String
     Default: cron(30 17 ? * MON *)

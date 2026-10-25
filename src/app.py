@@ -8,6 +8,7 @@ Confidence points follow the usual pick'em rule: with N games in the week,
 each value 1..N is used exactly once.
 """
 
+import html
 import json
 import logging
 import math
@@ -434,24 +435,39 @@ def normalize(picks, games, values):
 # ---------------------------------------------------------------- email
 
 
+def deliver(subject, html_body, text):
+    """Send one HTML + plain-text email to the recipient."""
+    ses.send_email(
+        FromEmailAddress=SENDER,
+        Destination={"ToAddresses": [RECIPIENT]},
+        Content={
+            "Simple": {
+                "Subject": {"Data": subject},
+                "Body": {"Html": {"Data": html_body}, "Text": {"Data": text}},
+            }
+        },
+    )
+
+
 def send_email(subject, picks, games, notes, summary):
     by_id = {g["id"]: g for g in games}
     rows, text_rows = [], []
     for p in sorted(picks, key=lambda p: -p.confidence):
         g = by_id[p.game_id]
         matchup = f"{g['away']} @ {g['home']}"
+        e = html.escape
         when = f"{g['kickoff_ct']:%a %I:%M %p}"
         rows.append(
             f"<tr><td style='padding:4px 8px;text-align:right'><b>{p.confidence}</b></td>"
-            f"<td style='padding:4px 8px'><b>{p.winner}</b></td>"
-            f"<td style='padding:4px 8px'>{matchup}</td><td style='padding:4px 8px'>{when}</td>"
-            f"<td style='padding:4px 8px'>{g['line']}</td><td style='padding:4px 8px'>{p.reasoning}</td></tr>"
+            f"<td style='padding:4px 8px'><b>{e(p.winner)}</b></td>"
+            f"<td style='padding:4px 8px'>{e(matchup)}</td><td style='padding:4px 8px'>{when}</td>"
+            f"<td style='padding:4px 8px'>{e(g['line'])}</td><td style='padding:4px 8px'>{e(p.reasoning)}</td></tr>"
         )
         text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
 
-    notes_html = "".join(f"<p style='color:#555'>{n}</p>" for n in notes)
-    summary_html = f"<p>{summary}</p>" if summary else ""
-    html = (
+    notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
+    summary_html = f"<p>{html.escape(summary)}</p>" if summary else ""
+    body = (
         f"<html><body style='font-family:sans-serif'>{summary_html}"
         "<table style='border-collapse:collapse' border='1'>"
         "<tr><th>Pts</th><th>Pick</th><th>Game</th><th>Kickoff (CT)</th><th>Line</th><th>Why</th></tr>"
@@ -459,16 +475,7 @@ def send_email(subject, picks, games, notes, summary):
     )
     text = "\n".join(([summary, ""] if summary else []) + text_rows + [""] + notes)
 
-    ses.send_email(
-        FromEmailAddress=SENDER,
-        Destination={"ToAddresses": [RECIPIENT]},
-        Content={
-            "Simple": {
-                "Subject": {"Data": subject},
-                "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-            }
-        },
-    )
+    deliver(subject, body, text)
 
 
 # ---------------------------------------------------------------- handler
@@ -554,13 +561,13 @@ def handler(event, context):
     target_ids = {g["id"] for g in targets}
     picks = [p for p in picks if p.game_id in target_ids]
 
-    if run == "thursday" and not test:
-        for p in picks:
-            locked[p.game_id] = {"winner": p.winner, "confidence": p.confidence}
-        save_locked(season, week, locked)
-
     label = "Thursday" if run == "thursday" else "Sunday/Monday"
     subject = f"{'[TEST] ' if test else ''}NFL Week {week} Pick'em - {label}"
     send_email(subject, picks, games, notes, summary)
+    if run == "thursday" and not test:
+        # After the send: a failed email must not leave the week locked, or the retry would send nothing.
+        for p in picks:
+            locked[p.game_id] = {"winner": p.winner, "confidence": p.confidence}
+        save_locked(season, week, locked)
     log.info("sent %d picks for week %s (%s)", len(picks), week, run)
     return {"status": "sent", "week": week, "run": run, "picks": [p.model_dump() for p in picks]}

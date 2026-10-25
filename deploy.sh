@@ -11,7 +11,7 @@ BUCKET=nfl-pickem-artifacts-$ACCOUNT-$REGION
 
 rm -rf build && mkdir build
 # Linux/arm64 wheels for the Lambda runtime, regardless of the local machine.
-python3 -m pip install -q -r requirements.txt -t build \
+python3 -m pip install -q --require-hashes -r requirements.txt -t build \
   --platform manylinux2014_aarch64 --implementation cp --python-version 3.14 --only-binary=:all:
 # The Lambda runtime already ships boto3/botocore; don't bundle a second copy.
 rm -rf build/{boto3,botocore,s3transfer,jmespath}{,-*.dist-info}
@@ -29,7 +29,7 @@ aws cloudformation package --region "$REGION" --template-file template.yaml \
 
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file build/packaged.yaml --capabilities CAPABILITY_IAM \
-  --tags project=nfl-pickem \
+  --tags project=nfl-pickem --no-fail-on-empty-changeset \
   ${1:+--parameter-overrides "$@"}
 
 # Keep only the zip the stack now points at; older ones are never needed again.

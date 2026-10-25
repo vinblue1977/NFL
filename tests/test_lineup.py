@@ -355,31 +355,35 @@ class TestAlertRun:
 
 
 class TestWaiverRun:
-    def run(self, monkeypatch, games, pickups):
-        seen = {}
-
-        def fake(season, week, team, g, slots):
-            seen.update(week=week, games=g)
-            return pickups, "", "note"
-
+    def run(self, monkeypatch, pickups, test=False):
         sent = []
-        monkeypatch.setattr(lineup, "suggest_pickups", fake)
+        monkeypatch.setattr(lineup, "suggest_pickups", lambda *a: (pickups, "", "note"))
         monkeypatch.setattr(lineup, "deliver", lambda *a: sent.append(a))
-        result = lineup.waiver_run(2026, 7, {"name": "Team"}, games, [], test=False)
-        return result, seen, sent
+        return lineup.waiver_run(2026, 7, {"name": "Team"}, [], test=test), sent
 
-    def test_looks_ahead_when_espn_still_shows_the_finished_week(self, monkeypatch):
-        _, seen, _ = self.run(monkeypatch, [{"started": True}, {"started": True}], [])
-        assert seen == {"week": 8, "games": []}  # nobody is locked on Tuesday
-
-    def test_keeps_the_week_when_games_are_upcoming(self, monkeypatch):
-        _, seen, _ = self.run(monkeypatch, [{"started": False}], [])
-        assert seen["week"] == 7
-
-    def test_silent_without_pickups_and_emails_with_them(self, monkeypatch):
-        result, _, sent = self.run(monkeypatch, [], [])
+    def test_silent_without_pickups(self, monkeypatch):
+        result, sent = self.run(monkeypatch, [])
         assert result["status"] == "no pickups" and not sent
-        add = {"name": "A", "pos": "WR", "team": "KC", "ros_avg": 9.0, "availability": "FREEAGENT"}
+
+    def test_emails_pickups_escaped(self, monkeypatch):
+        add = {"name": "A<b>", "pos": "WR", "team": "KC", "ros_avg": 9.0, "availability": "FREEAGENT"}
         drop = {"name": "D", "ros_avg": 3.0}
-        result, _, sent = self.run(monkeypatch, [], [(add, drop, "why")])
-        assert result["status"] == "sent" and "Waiver Pickups" in sent[0][0]
+        result, sent = self.run(monkeypatch, [(add, drop, "why & more")])
+        subject, body, _ = sent[0]
+        assert result["status"] == "sent" and "Waiver Pickups" in subject
+        assert "A&lt;b&gt;" in body and "why &amp; more" in body
+
+    def test_test_event_sends_even_when_empty(self, monkeypatch):
+        result, sent = self.run(monkeypatch, [], test=True)
+        assert result["status"] == "sent" and sent
+
+    def test_handler_looks_ahead_when_espn_shows_the_finished_week(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(lineup, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        monkeypatch.setattr(lineup, "parse_games", lambda sb: [{"started": True}])
+        monkeypatch.setattr(lineup, "fetch_league", lambda season, week: seen.setdefault("week", week) and ({}, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda *a: {})
+        monkeypatch.setattr(lineup, "lineup_slots", lambda *a: [])
+        monkeypatch.setattr(lineup, "waiver_run", lambda *a: {"status": "ok"})
+        lineup.handler({"run": "waivers"}, None)
+        assert seen["week"] == 8

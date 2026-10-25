@@ -17,6 +17,7 @@ Every other run also suggests free-agent pickups: the best available players by
 ESPN's rest-of-season projection, checked against recent player news.
 """
 
+import html
 import json
 import os
 import urllib.request
@@ -29,17 +30,15 @@ from pydantic import BaseModel
 from app import (
     CENTRAL,
     MODEL_ID,
-    RECIPIENT,
     REGULAR_SEASON,
-    SENDER,
     UA,
     claude_tool_call,
+    deliver,
     fetch,
     injuries_by_team,
     log,
     parse_games,
     recent_news,
-    ses,
     ssm,
 )
 
@@ -420,7 +419,7 @@ def describe_outlook(p):
     where = {"FREEAGENT": "free agent", "WAIVERS": "on waivers (needs a claim)"}.get(p["availability"], "")
     line = (
         f"- id={p['id']} {p['name']} {p['pos']} {p['team']} (bye wk {p['bye']}) | "
-        f"{p['status'].lower()} | this week {p['week']:.1f} | 2026 avg {p['avg']:.1f} | "
+        f"{p['status'].lower()} | this week {p['week']:.1f} | season avg {p['avg']:.1f} | "
         f"rest of season {p['ros']:.0f} ({p['ros_avg']:.1f}/g) | {p['owned']:.0f}% rostered in ESPN leagues"
         + (f" | {where}" if where else "")
     )
@@ -534,7 +533,7 @@ def why(p, reasons):
     return ""
 
 
-def row(label, p, reasons, html):
+def row(label, p, reasons, as_html):
     if not p:
         cells = [label, "(empty)", "", "", "", "", "", ""]
     else:
@@ -549,8 +548,8 @@ def row(label, p, reasons, html):
             p["status"].replace("_", " ").title(),
             why(p, reasons),
         ]
-    if html:
-        return "<tr>" + "".join(f"<td style='padding:4px 8px'>{c}</td>" for c in cells) + "</tr>"
+    if as_html:
+        return "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
     return f"{cells[0]:<6} {cells[1]:<24} {cells[3]:<8} {cells[5]:>5}  {cells[6]:<12} {cells[7]}"
 
 
@@ -568,12 +567,17 @@ def pickup_cells(add, drop, reason):
 
 def pickups_html(pickups, summary):
     if not pickups:
-        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (f"<p>{summary}</p>" if summary else "")
+        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (
+            f"<p>{html.escape(summary)}</p>" if summary else ""
+        )
     header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g", "Why"]
-    rows = "".join("<tr>" + "".join(f"<td style='padding:4px 8px'>{c}</td>" for c in pickup_cells(*m)) + "</tr>" for m in pickups)
+    rows = "".join(
+        "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in pickup_cells(*m)) + "</tr>"
+        for m in pickups
+    )
     return (
         "<h3>Free-agent pickups</h3>"
-        + (f"<p>{summary}</p>" if summary else "")
+        + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + "<table style='border-collapse:collapse' border='1'><tr>"
         + "".join(f"<th>{h}</th>" for h in header)
         + "</tr>"
@@ -591,19 +595,6 @@ def pickups_text(pickups, summary):
         add, pos, add_avg, drop, drop_avg, reason = pickup_cells(*m)
         lines.append(f"  - Add {add} ({pos}, {add_avg}), drop {drop} ({drop_avg}): {reason}")
     return lines
-
-
-def deliver(subject, html, text):
-    ses.send_email(
-        FromEmailAddress=SENDER,
-        Destination={"ToAddresses": [RECIPIENT]},
-        Content={
-            "Simple": {
-                "Subject": {"Data": subject},
-                "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-            }
-        },
-    )
 
 
 def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary):
@@ -624,19 +615,19 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
         )
 
     actions_html = (
-        "<h3>Action needed</h3><ul>" + "".join(f"<li><b>{a}</b></li>" for a in actions) + "</ul>"
+        "<h3>Action needed</h3><ul>" + "".join(f"<li><b>{html.escape(a)}</b></li>" for a in actions) + "</ul>"
         if actions
         else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>"
     )
-    html = (
-        f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>{actions_html}"
-        + (f"<p>{summary}</p>" if summary else "")
+    body = (
+        f"<html><body style='font-family:sans-serif'><p>{html.escape(team_name(team))}</p>{actions_html}"
+        + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + f"<h3>Lineup (projected {total:.1f})</h3>"
         + table(row(label, p, reasons, True) for label, p in lineup.items())
         + "<h3>Bench</h3>"
         + table(row("BE", p, reasons, True) for p in bench)
         + pickups_part
-        + "".join(f"<p style='color:#555'>{n}</p>" for n in notes)
+        + "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
         + "</body></html>"
     )
     text = "\n".join(
@@ -651,28 +642,25 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
         + [""]
         + notes
     )
-    deliver(subject, html, text)
+    deliver(subject, body, text)
 
 
 # ---------------------------------------------------------------- handler
 
 
-def waiver_run(season, week, team, games, slots, test):
+def waiver_run(season, week, team, slots, test):
     """Tuesday: email just the pickups, ahead of the Wednesday waiver run. Silent if there are none."""
-    # Monday night's games are over, so nobody is locked; if ESPN still reports the finished week, look ahead.
-    if games and all(g["started"] for g in games):
-        week += 1
     pickups, summary, note = suggest_pickups(season, week, team, [], slots)
     if not pickups and not test:
         log.info("week %s waivers: nothing worth claiming, no email", week)
         return {"status": "no pickups", "week": week, "run": "waivers"}
-    html = (
-        f"<html><body style='font-family:sans-serif'><p>{team_name(team)}</p>"
+    body = (
+        f"<html><body style='font-family:sans-serif'><p>{html.escape(team_name(team))}</p>"
         + pickups_html(pickups, summary)
-        + f"<p style='color:#555'>{note}</p></body></html>"
+        + f"<p style='color:#555'>{html.escape(note)}</p></body></html>"
     )
     text = "\n".join([team_name(team), ""] + pickups_text(pickups, summary) + ["", note])
-    deliver(f"{'[TEST] ' if test else ''}Fantasy Week {week} Waiver Pickups", html, text)
+    deliver(f"{'[TEST] ' if test else ''}Fantasy Week {week} Waiver Pickups", body, text)
     log.info("sent waiver pickups for week %s: %d", week, len(pickups))
     return {
         "status": "sent",
@@ -701,11 +689,13 @@ def handler(event, context):
         log.info("alert: no game kicks off in the next %d min, skipping", ALERT_WINDOW // 60)
         return {"status": "no game soon", "run": run}
 
+    if run == "waivers" and games and all(g["started"] for g in games):
+        week += 1  # ESPN still reports the finished week; roster, projections and byes should be for the next one
     league, swid = fetch_league(season, week)
     team = my_team(league, swid)
     slots = lineup_slots(league)
     if run == "waivers":
-        return waiver_run(season, week, team, games, slots, test)
+        return waiver_run(season, week, team, slots, test)
     roster = players(team, games, week)
     lineup = best_lineup(roster, slots)
     notes, reasons, summary = [], {}, ""

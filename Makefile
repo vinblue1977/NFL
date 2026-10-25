@@ -22,10 +22,11 @@ test:
 
 audit:              ## Check dependencies for known vulnerabilities
 	$(PYTHON) -m pip_audit --require-hashes --disable-pip -r requirements-dev.txt
+	$(PYTHON) -m pip_audit --require-hashes --disable-pip -r requirements.txt  # what ships
 
-lock:               ## Regenerate the hashed dev lockfile from requirements-dev.in
-	$(PYTHON) -m piptools compile --quiet --generate-hashes --allow-unsafe --strip-extras \
-		--no-emit-index-url --output-file=requirements-dev.txt requirements-dev.in
+lock:               ## Regenerate the hashed lockfiles (Lambda runtime, dev tools) from the .in files
+	for d in requirements requirements-dev; do $(PYTHON) -m piptools compile --quiet --generate-hashes --allow-unsafe \
+		--strip-extras --no-emit-index-url --output-file=$$d.txt $$d.in; done
 
 clean:
 	rm -rf build .pytest_cache .ruff_cache .coverage
