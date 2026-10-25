@@ -10,13 +10,15 @@ Sunday run:   final lineup for everyone whose game hasn't started.
 
 Alert runs (early and late Sunday, Monday evening) re-check the lineup once a
 game's inactives are out. They do nothing unless a game kicks off within two
-hours, and email only if a start/bench change is needed.
+hours, and email only if a start/bench change is needed that the last alert
+didn't already tell you about.
 Waiver run (Tuesday): emails only the free-agent pickups, and only if there are any.
 
 Every other run also suggests free-agent pickups: the best available players by
 ESPN's rest-of-season projection, checked against recent player news.
 """
 
+import hashlib
 import html
 import json
 import os
@@ -51,6 +53,7 @@ S2_PARAM = os.environ.get("ESPN_S2_PARAM", "/nfl-pickem/espn-s2")
 SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
 ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
+ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
 RUNS = {"thursday", "saturday", "sunday", "alert", "waivers"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
@@ -648,6 +651,48 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
 # ---------------------------------------------------------------- handler
 
 
+def alert_name(season, week):
+    return f"{ALERT_PREFIX}/{season}-w{week}"
+
+
+def digest(action):
+    return hashlib.sha256(action.encode()).hexdigest()[:12]
+
+
+def sent_alerts(season, week):
+    """Digests of the moves already emailed this week. SSM trouble reads as 'none', so an alert is never lost."""
+    try:
+        return set(json.loads(ssm.get_parameter(Name=alert_name(season, week))["Parameter"]["Value"]))
+    except ssm.exceptions.ParameterNotFound:
+        return set()
+    except Exception:
+        log.exception("couldn't read the saved alerts; treating every move as new")
+        return set()
+
+
+def save_alerts(season, week, digests):
+    try:
+        ssm.put_parameter(Name=alert_name(season, week), Value=json.dumps(sorted(digests)), Type="String", Overwrite=True)
+    except Exception:  # the email already went out; a missed save only risks one repeat
+        log.exception("couldn't save the sent alerts")
+
+
+def alert_is_new(season, week, actions):
+    """True if any of these moves wasn't in an earlier alert this week."""
+    sent = sent_alerts(season, week)
+    return any(digest(a) not in sent for a in actions)
+
+
+def remember_alert(season, week, actions):
+    save_alerts(season, week, sent_alerts(season, week) | {digest(a) for a in actions})
+
+
+def forget_if_settled(season, week, roster, lineup):
+    """Clear the saved alerts once no change is needed at all (not just none soon), so a returning problem alerts again."""
+    if not moves(roster, lineup, "sunday") and sent_alerts(season, week):
+        save_alerts(season, week, set())
+
+
 def waiver_run(season, week, team, slots, test):
     """Tuesday: email just the pickups, ahead of the Wednesday waiver run. Silent if there are none."""
     pickups, summary, note = suggest_pickups(season, week, team, [], slots)
@@ -702,6 +747,7 @@ def handler(event, context):
 
     if run == "alert" and not test and not moves(roster, lineup, run, now_ct):
         # Nothing to change on projections alone, so skip the AI review and the email.
+        forget_if_settled(season, week, roster, lineup)
         log.info("week %s alert: lineup is still right, no email", week)
         return {"status": "no changes", "week": week, "run": run}
 
@@ -723,9 +769,14 @@ def handler(event, context):
     if any(not p for p in lineup.values()):
         notes.append("Some slots have no healthy eligible player; check waivers/free agents.")
     actions = moves(roster, lineup, run, now_ct)
-    if run == "alert" and not actions and not test:  # the AI review can undo a projection-only change
-        log.info("week %s alert: lineup is still right, no email", week)
-        return {"status": "no changes", "week": week, "run": run}
+    if run == "alert" and not test:
+        if not actions:  # the AI review can undo a projection-only change
+            forget_if_settled(season, week, roster, lineup)
+            log.info("week %s alert: lineup is still right, no email", week)
+            return {"status": "no changes", "week": week, "run": run}
+        if not alert_is_new(season, week, actions):  # you were already told; an ignored move shouldn't repeat
+            log.info("week %s alert: same moves as the last alert, no email", week)
+            return {"status": "unchanged", "week": week, "run": run}
     if run == "alert":
         notes.append("Late check before kickoff; only players in games starting soon are listed.")
 
@@ -741,6 +792,8 @@ def handler(event, context):
     label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final", "alert": "Lineup alert"}[run]
     subject = f"{'[TEST] ' if test else ''}Fantasy Week {week} Lineup - {label}"
     send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary)
+    if run == "alert" and not test:  # after the send: a failed email must not hide the alert from the retry
+        remember_alert(season, week, actions)
     log.info("sent lineup for week %s (%s): %d moves", week, run, len(actions))
     return {
         "status": "sent",

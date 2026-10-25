@@ -387,3 +387,121 @@ class TestWaiverRun:
         monkeypatch.setattr(lineup, "waiver_run", lambda *a: {"status": "ok"})
         lineup.handler({"run": "waivers"}, None)
         assert seen["week"] == 8
+
+
+class FakeSsm:
+    """In-memory stand-in for the SSM client's get/put parameter calls."""
+
+    class exceptions:
+        class ParameterNotFound(Exception):
+            pass
+
+    def __init__(self):
+        self.values = {}
+
+    def get_parameter(self, Name, **kw):
+        if Name not in self.values:
+            raise self.exceptions.ParameterNotFound(Name)
+        return {"Parameter": {"Value": self.values[Name]}}
+
+    def put_parameter(self, Name, Value, **kw):
+        self.values[Name] = Value
+
+
+class TestAlertDedupe:
+    @pytest.fixture
+    def store(self, monkeypatch):
+        fake = FakeSsm()
+        monkeypatch.setattr(lineup, "ssm", fake)
+        return fake
+
+    def test_first_alert_is_new_and_repeat_is_not(self, store):
+        assert lineup.alert_is_new(2026, 7, ["Start A at QB"])
+        lineup.remember_alert(2026, 7, ["Start A at QB"])
+        assert not lineup.alert_is_new(2026, 7, ["Start A at QB"])
+
+    def test_only_moves_already_sent_are_suppressed(self, store):
+        lineup.remember_alert(2026, 7, ["Start A at QB", "Bench B"])
+        assert not lineup.alert_is_new(2026, 7, ["Bench B"])  # A's game started; B alone is still old news
+        assert lineup.alert_is_new(2026, 7, ["Bench B", "Bench C"])
+
+    def test_weeks_are_independent(self, store):
+        lineup.remember_alert(2026, 7, ["Bench B"])
+        assert lineup.alert_is_new(2026, 8, ["Bench B"])
+
+    def test_ssm_trouble_fails_open_and_never_raises(self, monkeypatch):
+        class Broken(FakeSsm):
+            def get_parameter(self, **kw):
+                raise RuntimeError("throttled")
+
+            def put_parameter(self, **kw):
+                raise RuntimeError("denied")
+
+        monkeypatch.setattr(lineup, "ssm", Broken())
+        assert lineup.alert_is_new(2026, 7, ["Bench B"])
+        lineup.remember_alert(2026, 7, ["Bench B"])
+
+    def test_forgets_only_when_no_change_is_needed_at_all(self, store):
+        qb = player(1, "QB", 20, slot=BENCH)  # kicks off hours from now: outside any alert window
+        lu = {"QB": qb}
+        lineup.remember_alert(2026, 7, ["Start P1 at QB"])
+        lineup.forget_if_settled(2026, 7, [qb], lu)
+        assert not lineup.alert_is_new(2026, 7, ["Start P1 at QB"])  # still needed, so still remembered
+        qb["slot"] = 0
+        lineup.forget_if_settled(2026, 7, [qb], lu)
+        assert lineup.alert_is_new(2026, 7, ["Start P1 at QB"])
+
+
+class TestAlertHandler:
+    """The alert run emails a start/bench change once, not at every alert."""
+
+    @pytest.fixture
+    def setup(self, monkeypatch):
+        fake = FakeSsm()
+        sent = []
+        now = datetime.now(lineup.CENTRAL)
+        qb = player(1, "QB", 20, slot=BENCH)
+        qb["game"]["kickoff_ct"] = now + timedelta(minutes=60)
+        monkeypatch.setattr(lineup, "ssm", fake)
+        monkeypatch.setattr(lineup, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        monkeypatch.setattr(lineup, "parse_games", lambda sb: [qb["game"]])
+        monkeypatch.setattr(lineup, "fetch_league", lambda season, week: ({}, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda *a: {"name": "Team"})
+        monkeypatch.setattr(lineup, "lineup_slots", lambda *a: [("QB", 0)])
+        monkeypatch.setattr(lineup, "players", lambda *a: [qb])
+        monkeypatch.setattr(lineup, "USE_AI", False)
+        monkeypatch.setattr(lineup, "send_email", lambda *a: sent.append(a))
+        return fake, sent, qb
+
+    def test_same_move_is_emailed_once(self, setup):
+        _, sent, _ = setup
+        assert lineup.handler({"run": "alert"}, None)["status"] == "sent"
+        assert lineup.handler({"run": "alert"}, None)["status"] == "unchanged"
+        assert len(sent) == 1
+
+    def test_fixed_lineup_clears_and_the_problem_alerts_again(self, setup):
+        fake, sent, qb = setup
+        lineup.handler({"run": "alert"}, None)
+        qb["slot"] = 0  # you started him
+        assert lineup.handler({"run": "alert"}, None)["status"] == "no changes"
+        assert not fake.values or fake.values[next(iter(fake.values))] == "[]"
+        qb["slot"] = BENCH  # and then benched him again
+        assert lineup.handler({"run": "alert"}, None)["status"] == "sent"
+        assert len(sent) == 2
+
+    def test_failed_email_is_not_remembered(self, setup, monkeypatch):
+        fake, _, _ = setup
+
+        def boom(*a):
+            raise RuntimeError("ses down")
+
+        monkeypatch.setattr(lineup, "send_email", boom)
+        with pytest.raises(RuntimeError):
+            lineup.handler({"run": "alert"}, None)
+        assert not fake.values
+
+    def test_test_runs_neither_dedupe_nor_save(self, setup):
+        fake, sent, _ = setup
+        lineup.handler({"run": "alert", "test": True}, None)
+        lineup.handler({"run": "alert", "test": True}, None)
+        assert len(sent) == 2 and not fake.values
