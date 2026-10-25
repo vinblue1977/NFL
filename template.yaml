@@ -88,8 +88,8 @@ Parameters:
     Description: Central time. Free-agent/waiver pickups ahead of the Wednesday waiver run; emails only if there are any.
   RecapSchedule:
     Type: String
-    Default: cron(30 7 ? * TUE *)
-    Description: Central time. Recap of the finished week (points vs projections, best lineup in hindsight); waits until every game is final.
+    Default: cron(30 7 ? * TUE,WED *)
+    Description: Central time. Recap of the finished week (points vs projections, best lineup in hindsight). Waits until every game is final; Wednesday only retries a Tuesday that wasn't ready (a week is recapped once).
 
 Conditions:
   MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]

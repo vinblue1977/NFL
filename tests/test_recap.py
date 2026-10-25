@@ -24,9 +24,9 @@ class TestHindsight:
         names = {label: p["name"] for label, p in lineup.hindsight(roster(), SLOTS).items()}
         assert names == {"QB": "P1", "RB1": "P5", "RB2": "P2", "WR1": "P4", "FLEX": "P3", "D/ST": "P6"}
 
-    def test_a_bye_or_injured_player_still_judged_on_actual_points_only_if_he_played(self):
+    def test_a_player_on_bye_who_scored_nothing_cannot_be_in_the_best_lineup(self):
         r = roster()
-        r[4]["game"] = None  # was on bye: scored nothing and can't be started
+        r[4]["game"], r[4]["actual"] = None, 0.0  # on bye
         assert lineup.hindsight(r, SLOTS)["RB1"]["name"] == "P2"
 
 
@@ -176,3 +176,53 @@ class TestFetchLeagueViews:
         lineup.fetch_league(2026, 7)
         lineup.fetch_league(2026, 7, matchups=True)
         assert "mMatchupScore" not in urls[0] and "mMatchupScore" in urls[1] and "scoringPeriodId=7" in urls[1]
+
+
+class TestRecapReview:
+    def test_double_header_leagues_map_weeks_to_matchup_periods(self):
+        league = {
+            "settings": {"scheduleSettings": {"matchupPeriods": {"16": [16, 17]}}},
+            "teams": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
+            "schedule": [
+                {"matchupPeriodId": 16, "home": {"teamId": 1, "totalPoints": 5}, "away": {"teamId": 2, "totalPoints": 3}}
+            ],
+        }
+        assert lineup.matchup_result(league, {"id": 1}, 17) == (5, "B", 3)
+        assert lineup.matchup_periods({}, 7) == {7}
+
+    def test_missing_week_number_is_not_a_crash(self):
+        assert lineup.recap_week({"events": []}) is None
+
+    def test_missing_projections_are_left_out_not_shown_as_zero(self):
+        r = [player(1, "QB", 0, slot=0, actual=20)]
+        f = lineup.recap_facts(r, [("QB", 0)], None)
+        assert f["projected"] is None
+        assert "projected" not in "\n".join(lineup.recap_summary({"name": "T"}, 3, f))
+        assert lineup.recap_rows(f)[0][3] == "-"
+
+    def test_a_player_who_scored_counts_even_if_his_game_went_missing(self):
+        r = [player(1, "QB", 5, slot=BENCH, game=False, actual=30), player(2, "QB", 20, slot=0, actual=10)]
+        best = lineup.hindsight(r, [("QB", 0)])
+        assert best["QB"]["name"] == "P1"
+
+    def test_best_is_never_below_what_was_scored(self):
+        r = [player(1, "QB", 20, slot=0, actual=10, game=False)]  # lineup slot with a missing game
+        assert lineup.recap_facts(r, [("QB", 0)], None)["best"] >= 10
+
+
+class TestRecapOnce:
+    def test_a_week_is_recapped_once_and_test_runs_leave_no_trace(self, monkeypatch, fake_ssm):
+        sent = []
+        sb = {"season": {"type": 2, "year": 2026}, "week": {"number": 7}}
+        monkeypatch.setattr(lineup, "parse_games", lambda s: [{"id": "g", "started": True}])
+        monkeypatch.setattr(lineup, "final_winners", lambda s: {"g": "KC"})
+        monkeypatch.setattr(lineup, "fetch_league", lambda *a, **k: ({"teams": [], "schedule": []}, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda *a: {"id": 1, "name": "T"})
+        monkeypatch.setattr(lineup, "lineup_slots", lambda league: SLOTS)
+        monkeypatch.setattr(lineup, "players", lambda *a: roster())
+        monkeypatch.setattr(lineup, "deliver", lambda *a: sent.append(a))
+        lineup.recap_run(2026, sb, test=True)
+        assert not fake_ssm.values
+        assert lineup.recap_run(2026, sb, test=False)["status"] == "sent"
+        assert lineup.recap_run(2026, sb, test=False)["status"] == "already sent"
+        assert len(sent) == 2  # the test email plus the one real one

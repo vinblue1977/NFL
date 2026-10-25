@@ -65,6 +65,7 @@ ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds
 COOKIE_ALERT_PARAM = os.environ.get("COOKIE_ALERT_PARAM", "/nfl-pickem/cookie-alert")
 COOKIE_ALERT_GAP = timedelta(hours=20)  # one warning a day, not one per run
 FUNCTION = "nfl-fantasy-lineup"
+RECAP_PARAM = os.environ.get("RECAP_PARAM", "/nfl-pickem/recap")
 RUNS = {"thursday", "saturday", "sunday", "alert", "waivers", "recap"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
@@ -750,16 +751,28 @@ def waiver_run(season, week, team, slots, test):
 
 def hindsight(roster, slots):
     """The best lineup the roster could have fielded, judged by what everyone actually scored."""
-    judged = [{**p, "proj": p["actual"], "locked": False, "status": "ACTIVE"} for p in roster if p["slot"] != IR]
+    judged = [  # anyone who scored played, even if the scoreboard lost track of his game
+        {**p, "proj": p["actual"], "locked": False, "status": "ACTIVE", "game": p["game"] or ({} if p["actual"] else None)}
+        for p in roster
+        if p["slot"] != IR
+    ]
     return best_lineup(judged, slots)
+
+
+def matchup_periods(league, week):
+    """Matchup period ids that cover this NFL week (they are the same number unless the league doubles up weeks)."""
+    periods = (league.get("settings", {}).get("scheduleSettings", {}).get("matchupPeriods")) or {}
+    ids = {int(k) for k, weeks in periods.items() if week in weeks}
+    return ids or {week}
 
 
 def matchup_result(league, team, week):
     """(my points, opponent name, opponent points) for that week's matchup, or None (bye, eliminated, not scored)."""
     names = {t["id"]: team_name(t) for t in league.get("teams", [])}
+    periods = matchup_periods(league, week)
     for m in league.get("schedule", []):
         home, away = m.get("home") or {}, m.get("away") or {}
-        if m.get("matchupPeriodId") != week or team["id"] not in (home.get("teamId"), away.get("teamId")):
+        if m.get("matchupPeriodId") not in periods or team["id"] not in (home.get("teamId"), away.get("teamId")):
             continue
         me, opp = (home, away) if home.get("teamId") == team["id"] else (away, home)
         if "totalPoints" in me and "totalPoints" in opp:
@@ -770,6 +783,8 @@ def matchup_result(league, team, week):
 def recap_week(sb):
     """The week the recap is about: ESPN's current week, or the one before it once ESPN has rolled over to the next."""
     week = sb.get("week", {}).get("number")
+    if week is None:
+        return None
     games = parse_games(sb)
     return week - 1 if games and not any(g["started"] for g in games) else week
 
@@ -781,11 +796,12 @@ def recap_facts(roster, slots, result):
     best = {p["id"]: p for p in hindsight(roster, slots).values() if p}
     started = {p["id"] for p in starters}
     scored = sum(p["actual"] for p in starters)
+    projected = sum(p["proj"] for p in starters)
     return {
         "starters": starters,
         "scored": scored,
-        "projected": sum(p["proj"] for p in starters),
-        "best": sum(p["actual"] for p in best.values()),
+        "projected": projected or None,  # ESPN may no longer serve a finished week's projections
+        "best": max(scored, sum(p["actual"] for p in best.values())),
         "bench_misses": sorted((p for i, p in best.items() if i not in started), key=lambda p: -p["actual"]),
         "bad_starts": sorted((p for p in starters if p["id"] not in best), key=lambda p: p["actual"]),
         "result": result,
@@ -800,7 +816,8 @@ def recap_summary(team, week, facts):
         mine, opp, theirs = facts["result"]
         verdict = "Won" if mine > theirs else "Lost" if mine < theirs else "Tied"
         lines.append(f"{verdict} {mine:g} to {theirs:g} against {opp}.")
-    lines.append(f"Your starters scored {facts['scored']:.1f} (ESPN projected {facts['projected']:.1f}).")
+    projected = f" (ESPN projected {facts['projected']:.1f})" if facts["projected"] else ""
+    lines.append(f"Your starters scored {facts['scored']:.1f}{projected}.")
     if gap < 0.05:
         lines.append("That was the best lineup you could have fielded.")
         return lines
@@ -813,7 +830,10 @@ def recap_summary(team, week, facts):
 
 
 def recap_rows(facts):
-    return [(SLOTS.get(p["slot"], "?"), p["name"], f"{p['actual']:.1f}", f"{p['proj']:.1f}") for p in facts["starters"]]
+    return [
+        (SLOTS.get(p["slot"], "?"), p["name"], f"{p['actual']:.1f}", f"{p['proj']:.1f}" if facts["projected"] else "-")
+        for p in facts["starters"]
+    ]
 
 
 def recap_email(team, week, facts):
@@ -850,6 +870,10 @@ def recap_run(season, sb, test):
     if not test and (not games or not {g["id"] for g in games} <= set(final_winners(wsb))):
         log.info("week %s isn't over yet; no recap", week)
         return {"status": "week not over", "week": week, "run": "recap"}
+    sent_weeks = load_param(f"{RECAP_PARAM}/{season}", [])
+    if week in sent_weeks and not test:  # the Wednesday run is only a retry for a Tuesday that wasn't ready
+        log.info("week %s recap already sent", week)
+        return {"status": "already sent", "week": week, "run": "recap"}
     league, swid = fetch_league(season, week, matchups=True)
     team = my_team(league, swid)
     slots = lineup_slots(league)
@@ -857,6 +881,11 @@ def recap_run(season, sb, test):
     facts = recap_facts(roster, slots, matchup_result(league, team, week))
     body, text = recap_email(team, week, facts)
     deliver(f"{'[TEST] ' if test else ''}Fantasy Week {week} Recap", body, text)
+    if not test:
+        try:
+            save_param(f"{RECAP_PARAM}/{season}", sorted({*sent_weeks, week}))
+        except Exception:  # the email went out; a missed save only risks a second recap
+            log.exception("couldn't record the recap")
     log.info("sent the week %s recap: %.1f scored, %.1f best", week, facts["scored"], facts["best"])
     return {"status": "sent", "week": week, "run": "recap", "scored": facts["scored"], "best": facts["best"]}
 
