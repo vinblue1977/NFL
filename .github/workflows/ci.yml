@@ -17,7 +17,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a no-op), using GitHub OIDC -> short-lived AWS credentials.
+# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a no-op), using GitHub
+# OIDC -> short-lived AWS credentials. A run whose commit is no longer the head of main skips its deploy step with a warning.
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
@@ -97,21 +98,22 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-2  # the deploy role's permissions are scoped to this region
           mask-aws-account-id: true  # logs are visible to anyone with repo access
-      - name: Deploy and check
+      - name: Check this commit is still the head of main
+        id: head
         # Deploys are serialized but not ordered, and this job may have queued behind another one, so check right
-        # before deploying that this commit is still the head of main. If a newer commit's checks fail, fix forward:
-        # the next push deploys.
+        # before deploying. If a newer commit's checks fail, fix forward: the next push deploys.
         run: |
-          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::warning::Skipped the deploy: main is now at $head, not $GITHUB_SHA."
-            exit 0
-          fi
+          head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
+          else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Deploy and check
+        if: steps.head.outputs.current == 'true'
+        run: |
           ./deploy.sh
           for fn in nfl-pickem nfl-fantasy-lineup; do
             info="$(aws lambda get-function --function-name "$fn" --query Configuration --output json)"
             echo "$fn: $(jq -r '[.State, .LastUpdateStatus, .LastModified] | join(" ")' <<<"$info")"
             jq -e '.State == "Active" and .LastUpdateStatus == "Successful"' <<<"$info" >/dev/null
           done
-        env:
-          GH_TOKEN: ${{ github.token }}
