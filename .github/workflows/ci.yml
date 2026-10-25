@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md"]  # a docs-only merge needs no run or deploy; pull_request stays unfiltered so the required checks still report
   pull_request:
   schedule:
     - cron: "0 13 * * 1"  # weekly, so new advisories against current dependency versions fail `make audit`
@@ -17,8 +18,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every push to main deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a no-op), using GitHub
-# OIDC -> short-lived AWS credentials. A run whose commit is no longer the head of main skips its deploy step with a warning.
+# Every push to main that changes more than *.md deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a
+# no-op), using GitHub OIDC -> short-lived AWS credentials. A run whose commit is no longer the head of main skips its deploy
+# step with a warning, unless only *.md files changed since (a docs-only push starts no run, so nothing else would deploy it).
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
@@ -98,7 +100,16 @@ jobs:
           head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
           [ -n "$head" ] || { echo "::error::Could not read the head of main."; exit 1; }
           if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
-          else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
+          else
+            # Docs-only pushes start no run, so a newer head that only added *.md files is the same code as this commit.
+            # Keep "*.md" here in step with paths-ignore above. Any API error, or a head that isn't strictly ahead, falls back to skipping.
+            compare="repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head"
+            if [ "$(gh api "$compare" --jq .status)" = "ahead" ] \
+              && names="$(gh api --paginate "$compare" --jq '.files[]?.filename')" \
+              && ! printf '%s' "$names" | grep -qv '\.md$'; then
+              echo "Only docs changed since this commit; deploying it."; echo "current=true" >> "$GITHUB_OUTPUT"
+            else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
