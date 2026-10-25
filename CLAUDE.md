@@ -7,8 +7,8 @@
 - `git pull` main before branching. Use a conventional title (`feat:`, `fix:`, `ci:`, `docs:`).
 - Run `make check` before pushing.
 - **Code review is required for every change except docs-only ones (`*.md`).** Run `/code-review` on the branch before opening the PR, fix what it finds (or say why not), and note in the PR description that the review was done.
-- This repo is private on a free GitHub plan, so there is no branch protection and `gh pr merge --auto` isn't available. Wait for the CI checks to pass, then merge with `gh pr merge --squash --delete-branch`.
-- After a PR merges, delete its branches: `git fetch --prune`, then `git branch -D` every local branch marked `gone` (and any remote branch of a merged PR that GitHub left behind). Never delete a branch with an open PR.
+- The repo is public, so `main` is protected: the `python`, `workflow-lint` and `conventional-title` checks must pass before a merge (admins aren't forced to, so don't push straight to main anyway). Once the review is done, merge with `gh pr merge --auto --squash`; it waits for the checks and merges by itself (GitHub deletes the remote branch).
+- After a PR merges, delete its branches: `git fetch --prune`, then `git branch -D` every local branch marked `gone`. Never delete a branch with an open PR.
 
 ## Deploying
 
