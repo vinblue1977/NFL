@@ -90,24 +90,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.14"
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-2  # the deploy role's permissions are scoped to this region
-          mask-aws-account-id: true  # logs are visible to anyone with repo access
       - name: Check this commit is still the head of main
         id: head
         # Deploys are serialized but not ordered, and this job may have queued behind another one, so check right
         # before deploying. If a newer commit's checks fail, fix forward: the next push deploys.
         run: |
           head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+          [ -n "$head" ] || { echo "::error::Could not read the head of main."; exit 1; }
           if [ "$head" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
           else echo "::warning::Skipping the deploy: main is now at $head, not $GITHUB_SHA."; fi
         env:
           GH_TOKEN: ${{ github.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        if: steps.head.outputs.current == 'true'
+        with:
+          python-version: "3.14"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        if: steps.head.outputs.current == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2  # the deploy role's permissions are scoped to this region
+          mask-aws-account-id: true  # logs are visible to anyone with repo access
       - name: Deploy and check
         if: steps.head.outputs.current == 'true'
         run: |
