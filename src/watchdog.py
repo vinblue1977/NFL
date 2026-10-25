@@ -26,13 +26,15 @@ sns = boto3.client("sns")
 
 def last_run(function):
     try:
-        return datetime.fromisoformat(ssm.get_parameter(Name=f"{HEARTBEAT_PREFIX}/{function}")["Parameter"]["Value"])
-    except ssm.exceptions.ParameterNotFound:
+        last = datetime.fromisoformat(ssm.get_parameter(Name=f"{HEARTBEAT_PREFIX}/{function}")["Parameter"]["Value"])
+    except ssm.exceptions.ParameterNotFound, ValueError:  # missing or garbled counts as never
         return None
+    return last if last.tzinfo else last.replace(tzinfo=UTC)
 
 
 def handler(event, context):
-    function, max_age = event["function"], timedelta(hours=float(event.get("max_age_hours", 5)))
+    function, hours = event["function"], float(event.get("max_age_hours", 5))
+    max_age = timedelta(hours=hours)
     now = datetime.now(UTC)
     last = last_run(function)
     if last and now - last <= max_age:
@@ -43,7 +45,7 @@ def handler(event, context):
         TopicArn=TOPIC_ARN,
         Subject=f"{function}: no completed run - check it"[:100],
         Message=(
-            f"{function} hasn't finished a run {since}, but one was due within the last {max_age}.\n\n"
+            f"{function} hasn't finished a run {since}, but one was due within the last {hours:g} hours.\n\n"
             "It probably timed out, ran out of memory, failed to start, or its schedule is disabled.\n"
             f"Check the /aws/lambda/{function} logs, and the schedules (aws scheduler list-schedules)."
         ),

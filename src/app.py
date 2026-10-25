@@ -597,8 +597,13 @@ def notify_failure(event, exc):
     )
 
 
-def heartbeat(function):
-    """Record that a run finished, so the watchdog can tell a run that never completed (timeout, OOM, no invoke)."""
+def heartbeat(function, event=None):
+    """Record that a run finished, so the watchdog can tell a run that never completed (timeout, OOM, no invoke).
+
+    A run that raised still counts: its failure was already reported. Manual test runs don't, or they'd hide a missed real run.
+    """
+    if (event or {}).get("test"):
+        return
     try:
         ssm.put_parameter(
             Name=f"{HEARTBEAT_PREFIX}/{function}", Value=datetime.now(UTC).isoformat(), Type="String", Overwrite=True
@@ -609,13 +614,13 @@ def heartbeat(function):
 
 def handler(event, context):
     try:
-        result = run_pickem(event)
+        return run_pickem(event)
     except Exception as exc:
         log.exception("pick'em run failed")
         notify_failure(event, exc)
         raise
-    heartbeat("nfl-pickem")
-    return result
+    finally:
+        heartbeat("nfl-pickem", event)
 
 
 def run_pickem(event):

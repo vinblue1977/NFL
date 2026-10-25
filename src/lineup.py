@@ -734,10 +734,13 @@ def waiver_run(season, week, team, slots, test):
 
 def cookie_alert(exc):
     """Tell me the ESPN cookies need refreshing (at most once a day) instead of failing every run."""
-    last = load_param(COOKIE_ALERT_PARAM, "")
-    if last and datetime.now(UTC) - datetime.fromisoformat(last) < COOKIE_ALERT_GAP:
+    try:
+        last = datetime.fromisoformat(load_param(COOKIE_ALERT_PARAM, ""))
+    except ValueError:  # never warned, or a hand-edited value
+        last = None
+    if last and datetime.now(UTC) - last < COOKIE_ALERT_GAP:
         log.warning("ESPN cookies still rejected; already warned at %s", last)
-        return {"status": "espn cookies expired"}
+        return {"status": "espn cookies still expired"}
     sent = notify(
         "nfl-fantasy-lineup: ESPN cookies expired - no lineup email",
         f"{exc}. The espn_s2 and SWID cookies have probably expired, so no fantasy email can be built.\n\n"
@@ -749,7 +752,10 @@ def cookie_alert(exc):
     )
     if not sent:
         raise exc  # no way to tell you, so fail loudly and let the error alarm do it
-    save_param(COOKIE_ALERT_PARAM, datetime.now(UTC).isoformat())
+    try:
+        save_param(COOKIE_ALERT_PARAM, datetime.now(UTC).isoformat())
+    except Exception:  # the warning went out; a missed save only risks a repeat
+        log.exception("couldn't save the cookie alert time")
     return {"status": "espn cookies expired"}
 
 
@@ -759,7 +765,12 @@ def handler(event, context):
     except EspnCookieError as exc:
         log.exception("ESPN cookies rejected")
         result = cookie_alert(exc)
-    heartbeat(FUNCTION)
+        if result["status"] == "espn cookies still expired":
+            return result  # no heartbeat: the watchdog keeps reminding me at each check until the cookies are fixed
+    except Exception:
+        heartbeat(FUNCTION, event)  # already reported by the error alarm
+        raise
+    heartbeat(FUNCTION, event)
     return result
 
 

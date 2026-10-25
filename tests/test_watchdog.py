@@ -28,10 +28,17 @@ class TestHeartbeat:
         assert app.handler({}, None) == {"status": "off season"}
         assert datetime.fromisoformat(fake_ssm.values["/nfl-pickem/heartbeat/nfl-pickem"])
 
-    def test_a_failed_run_leaves_no_heartbeat(self, fake_ssm, monkeypatch):
+    def test_a_failed_run_still_counts_because_its_failure_was_reported(self, fake_ssm, sent, monkeypatch):
         monkeypatch.setattr(app, "run_pickem", lambda event: (_ for _ in ()).throw(RuntimeError("x")))
         with pytest.raises(RuntimeError):
             app.handler({}, None)
+        assert len(sent) == 1 and "/nfl-pickem/heartbeat/nfl-pickem" in fake_ssm.values
+
+    def test_manual_test_runs_leave_no_heartbeat(self, fake_ssm, monkeypatch):
+        monkeypatch.setattr(app, "run_pickem", lambda event: {"status": "sent"})
+        monkeypatch.setattr(lineup, "run_lineup", lambda event: {"status": "sent"})
+        app.handler({"test": True}, None)
+        lineup.handler({"test": True}, None)
         assert not fake_ssm.values
 
     def test_a_heartbeat_write_failure_never_breaks_the_run(self, monkeypatch):
@@ -53,10 +60,17 @@ class TestWatchdog:
         assert watchdog.handler({"function": "nfl-pickem", "max_age_hours": 5}, None)["status"] == "ok"
         assert not sent
 
+    def test_garbled_or_naive_heartbeats_do_not_crash_the_watchdog(self, fake_ssm, sent):
+        fake_ssm.values["/nfl-pickem/heartbeat/a"] = "garbage"
+        assert watchdog.handler({"function": "a"}, None)["status"] == "overdue"
+        fake_ssm.values["/nfl-pickem/heartbeat/b"] = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        assert watchdog.handler({"function": "b"}, None)["status"] == "ok"
+
     def test_stale_heartbeat_emails(self, fake_ssm, sent):
         self.beat(fake_ssm, "nfl-pickem", timedelta(hours=30))
         assert watchdog.handler({"function": "nfl-pickem", "max_age_hours": 5}, None)["status"] == "overdue"
         assert "nfl-pickem" in sent[0]["Subject"] and "/aws/lambda/nfl-pickem" in sent[0]["Message"]
+        assert "within the last 5 hours" in sent[0]["Message"]
 
     def test_no_heartbeat_at_all_emails(self, fake_ssm, sent):
         assert watchdog.handler({"function": "nfl-fantasy-lineup"}, None)["status"] == "overdue"
@@ -96,7 +110,7 @@ class TestCookieExpiry:
         self.expired(monkeypatch)
         assert lineup.handler({"run": "sunday"}, None) == {"status": "espn cookies expired"}
         assert "cookies expired" in sent[0]["Subject"] and "put-parameter --name /nfl-pickem/espn-s2" in sent[0]["Message"]
-        assert "/nfl-pickem/heartbeat/nfl-fantasy-lineup" in fake_ssm.values  # a handled run still counts as a run
+        assert "/nfl-pickem/heartbeat/nfl-fantasy-lineup" in fake_ssm.values  # the warning went out, so the run is accounted for
 
     def test_warns_at_most_once_a_day(self, sent, fake_ssm, monkeypatch):
         self.expired(monkeypatch)
@@ -106,6 +120,24 @@ class TestCookieExpiry:
         fake_ssm.values["/nfl-pickem/cookie-alert"] = json.dumps((datetime.now(UTC) - timedelta(hours=21)).isoformat())
         lineup.handler({}, None)
         assert len(sent) == 2
+
+    def test_a_suppressed_warning_leaves_no_heartbeat_so_the_watchdog_keeps_reminding(self, sent, fake_ssm, monkeypatch):
+        self.expired(monkeypatch)
+        lineup.handler({}, None)
+        del fake_ssm.values["/nfl-pickem/heartbeat/nfl-fantasy-lineup"]
+        assert lineup.handler({}, None)["status"] == "espn cookies still expired"
+        assert "/nfl-pickem/heartbeat/nfl-fantasy-lineup" not in fake_ssm.values
+
+    def test_a_garbled_alert_time_is_treated_as_never_warned(self, sent, fake_ssm, monkeypatch):
+        self.expired(monkeypatch)
+        fake_ssm.values["/nfl-pickem/cookie-alert"] = json.dumps("not a time")
+        lineup.handler({}, None)
+        assert len(sent) == 1
+
+    def test_a_failed_save_after_the_warning_does_not_raise(self, sent, fake_ssm, monkeypatch):
+        self.expired(monkeypatch)
+        monkeypatch.setattr(lineup, "save_param", lambda *a: (_ for _ in ()).throw(OSError("denied")))
+        assert lineup.handler({}, None)["status"] == "espn cookies expired" and len(sent) == 1
 
     def test_fails_loudly_when_it_cannot_tell_me(self, monkeypatch):
         self.expired(monkeypatch)
