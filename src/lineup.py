@@ -775,8 +775,12 @@ def matchup_result(league, team, week):
         if m.get("matchupPeriodId") not in periods or team["id"] not in (home.get("teamId"), away.get("teamId")):
             continue
         me, opp = (home, away) if home.get("teamId") == team["id"] else (away, home)
-        if "totalPoints" in me and "totalPoints" in opp:
-            return me["totalPoints"], names.get(opp.get("teamId"), "your opponent"), opp["totalPoints"]
+        mine, theirs = me.get("totalPoints"), opp.get("totalPoints")
+        if mine is None or theirs is None or m.get("winner") == "UNDECIDED":
+            continue  # bye, not scored, or still being decided
+        if "winner" not in m and not (mine or theirs):
+            continue  # no verdict field and 0 to 0: ESPN hasn't tallied it (seen live mid-week)
+        return mine, names.get(opp.get("teamId"), "your opponent"), theirs
     return None
 
 

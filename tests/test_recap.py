@@ -72,6 +72,12 @@ class TestMatchupResult:
             },
             {"teams": [], "schedule": [{"matchupPeriodId": 7, "home": {"teamId": 1, "totalPoints": 1}}]},  # bye
             {"teams": [], "schedule": [{"matchupPeriodId": 7, "home": {"teamId": 1}, "away": {"teamId": 2}}]},  # not scored yet
+            {  # ESPN hasn't tallied the matchup yet (seen live mid-week: 0 to 0 while players had scored)
+                "teams": [],
+                "schedule": [
+                    {"matchupPeriodId": 7, "home": {"teamId": 1, "totalPoints": 0.0}, "away": {"teamId": 2, "totalPoints": 0.0}}
+                ],
+            },
         ],
     )
     def test_none_when_there_is_nothing_to_report(self, league):
@@ -226,3 +232,31 @@ class TestRecapOnce:
         assert lineup.recap_run(2026, sb, test=False)["status"] == "sent"
         assert lineup.recap_run(2026, sb, test=False)["status"] == "already sent"
         assert len(sent) == 2  # the test email plus the one real one
+
+
+class TestMatchupVerdict:
+    def league(self, **match):
+        sides = {"home": {"teamId": 1, "totalPoints": 0.0}, "away": {"teamId": 2, "totalPoints": 0.0}}
+        return {"teams": [], "schedule": [{"matchupPeriodId": 7, **{**sides, **match}}]}
+
+    def test_an_undecided_matchup_is_not_reported_even_with_partial_points(self):
+        league = self.league(winner="UNDECIDED", home={"teamId": 1, "totalPoints": 12.4})
+        assert lineup.matchup_result(league, {"id": 1}, 7) is None
+
+    def test_a_decided_zero_to_zero_is_a_real_tie(self):
+        assert lineup.matchup_result(self.league(winner="TIE"), {"id": 1}, 7) == (0.0, "your opponent", 0.0)
+
+    def test_null_totals_are_not_reported(self):
+        league = self.league(home={"teamId": 1, "totalPoints": None})
+        assert lineup.matchup_result(league, {"id": 1}, 7) is None
+
+    def test_a_later_row_for_a_doubled_week_is_used_when_the_first_is_not_tallied(self):
+        scored = {
+            "matchupPeriodId": 16,
+            "home": {"teamId": 1, "totalPoints": 5.0},
+            "away": {"teamId": 2, "totalPoints": 3.0},
+            "winner": "HOME",
+        }
+        league = {"settings": {"scheduleSettings": {"matchupPeriods": {"15": [16], "16": [16]}}}, "teams": []}
+        league["schedule"] = [{**scored, "matchupPeriodId": 15, "winner": "UNDECIDED"}, scored]
+        assert lineup.matchup_result(league, {"id": 1}, 16) == (5.0, "your opponent", 3.0)
