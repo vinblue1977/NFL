@@ -135,8 +135,18 @@ Resources:
                 Action: sns:Publish
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ComedTopic
               - Effect: Allow
-                Action: [ssm:GetParameter, ssm:GetParametersByPath, ssm:PutParameter, ssm:DeleteParameters]
+                Action: [ssm:GetParameter, ssm:PutParameter]
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/*
+              # Weekly pruning of the per-week records only; never the cookies, API key, results or heartbeats.
+              - Effect: Allow
+                Action: [ssm:GetParametersByPath, ssm:DeleteParameters]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/locked
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/locked/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/picks
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/picks/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/alerts
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/nfl-pickem/alerts/*
 
   PickemFunction:
     Type: AWS::Lambda::Function

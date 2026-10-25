@@ -44,3 +44,22 @@ class TestPruneState:
         seed(fake_ssm, (2026, 1))
         app.prune_state(2026, 1)
         assert len(fake_ssm.values) == 3
+
+    def test_one_prefix_failing_does_not_stop_the_others(self, fake_ssm, monkeypatch):
+        seed(fake_ssm, (2026, 1))
+        real = fake_ssm.delete_parameters
+
+        def flaky(Names):
+            if Names[0].startswith("/nfl-pickem/locked"):
+                raise OSError("denied")
+            real(Names)
+
+        monkeypatch.setattr(fake_ssm, "delete_parameters", flaky)
+        app.prune_state(2026, 9)
+        assert sorted(fake_ssm.values) == ["/nfl-pickem/locked/2026-w1"]
+
+    def test_names_that_only_look_like_weeks_are_left_alone(self, fake_ssm):
+        fake_ssm.values["/nfl-pickem/picks/2026-w1-copy"] = "x"
+        fake_ssm.values["/nfl-pickem/picks/x2026-w1"] = "x"
+        app.prune_state(2026, 9)
+        assert len(fake_ssm.values) == 2

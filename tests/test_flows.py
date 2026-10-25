@@ -398,6 +398,10 @@ class TestPickemPruning:
         assert not pruned
         app.run_pickem({"run": "thursday"})
         assert pruned == [(2026, 7)]
-        monkeypatch.setattr(app, "prune_state", lambda *a: (_ for _ in ()).throw(OSError("denied")))
-        fake_ssm.values.clear()  # forget the Thursday lock so the game is up for picking again
-        assert app.run_pickem({"run": "thursday"})["status"] == "sent"  # housekeeping never fails the run
+
+    def test_a_thursday_with_no_games_still_prunes(self, monkeypatch, fake_ssm):
+        pruned = []
+        monkeypatch.setattr(app, "prune_state", lambda season, week: pruned.append((season, week)))
+        monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        monkeypatch.setattr(app, "parse_games", lambda sb: [])
+        assert app.run_pickem({"run": "thursday"}) == {"status": "no games"} and pruned == [(2026, 7)]
