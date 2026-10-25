@@ -294,7 +294,7 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  AlertSundayAfternoon:
+  LateAlertSunday:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-sunday
@@ -318,7 +318,7 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "alert"}'
 
-  AlertMonday:
+  LateAlertMonday:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-fantasy-lineup-alert-monday
