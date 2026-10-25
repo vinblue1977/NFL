@@ -17,7 +17,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# There is no deploy job: the stack is deployed by hand with ./deploy.sh (see CLAUDE.md).
+# A push to main deploys the stack (./deploy.sh) once the checks pass, using GitHub OIDC -> short-lived AWS credentials.
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
@@ -72,3 +72,67 @@ jobs:
           version: "1.30.1"
           advanced-security: false  # findings as PR annotations, not uploaded to code scanning
           annotations: true
+
+  # Decides whether a push to main deploys: anything outside docs, Markdown, tests and CI config (except this
+  # workflow, which holds the deploy step). A manual run on main always deploys.
+  changes:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.diff.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        run: |
+          # The whole push range; an unknown base (new branch, force push, manual run) deploys.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            changed="manual-run"
+          elif git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA")"
+          else
+            changed="unknown-base"
+          fi
+          echo "$changed"
+          deployable="$(grep -Ev '^(\.github/|tests/|LICENSE$|pyproject\.toml$|pyrightconfig\.json$|Makefile$|requirements-dev\.(in|txt)$|deploy-role\.yaml$)|\.md$' <<<"$changed" || true)"
+          if grep -qx '.github/workflows/ci.yml' <<<"$changed"; then deployable=yes; fi
+          echo "deploy=$([ -n "$deployable" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+
+  deploy:
+    needs: [python, changes]
+    if: needs.changes.outputs.deploy == 'true'
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 30
+    environment: production   # deployment branches: main only (repo settings)
+    permissions:
+      contents: read
+      id-token: write   # GitHub OIDC -> short-lived AWS credentials, no stored access keys
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+          mask-aws-account-id: true  # logs are visible to anyone with repo access
+      - name: Deploy
+        run: ./deploy.sh
+      - name: Smoke test
+        run: |
+          for fn in nfl-pickem nfl-fantasy-lineup; do
+            state="$(aws lambda get-function --function-name "$fn" --query 'Configuration.[State,LastUpdateStatus]' --output text)"
+            echo "$fn: $state"; [ "$state" = "Active	Successful" ]
+          done
