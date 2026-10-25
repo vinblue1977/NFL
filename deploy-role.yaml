@@ -40,10 +40,6 @@ Resources:
                 Effect: Allow
                 Action: cloudformation:*
                 Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/nfl-pickem/*
-              - Sid: Transform
-                Effect: Allow
-                Action: [cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary]
-                Resource: "*"
               - Sid: Artifacts
                 Effect: Allow
                 Action: [s3:ListBucket, s3:GetBucketLocation, s3:CreateBucket, s3:PutBucketTagging, s3:GetBucketTagging]
@@ -78,9 +74,10 @@ Resources:
                 Resource: "*"
               - Sid: EmailIdentities
                 Effect: Allow
-                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, ses:TagResource, ses:UntagResource]
+                Action: [ses:CreateEmailIdentity, ses:DeleteEmailIdentity, ses:GetEmailIdentity, "ses:PutEmailIdentity*", ses:TagResource, ses:UntagResource]
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
-              # Roles the stack creates are named nfl-pickem-<LogicalId>-<suffix>. The deploy can manage only those.
+              # The stack's two roles are named nfl-pickem-FunctionRole-<suffix> and nfl-pickem-SchedulerRole-<suffix>.
+              # The pattern deliberately excludes this deploy role, so it can't edit its own permissions or trust.
               - Sid: StackRoles
                 Effect: Allow
                 Action:
@@ -92,12 +89,31 @@ Resources:
                   - iam:PutRolePolicy
                   - iam:DeleteRolePolicy
                   - iam:GetRolePolicy
-                  - iam:AttachRolePolicy
-                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
                   - iam:TagRole
                   - iam:UntagRole
-                  - iam:PassRole
-                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-FunctionRole-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-SchedulerRole-*
+              # Only the Lambda logging policy can be attached, so a managed policy like AdministratorAccess can't be.
+              - Sid: AttachLoggingPolicyOnly
+                Effect: Allow
+                Action: [iam:AttachRolePolicy, iam:DetachRolePolicy]
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-FunctionRole-*
+                Condition:
+                  ArnEquals:
+                    iam:PolicyARN: !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+              - Sid: PassStackRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-FunctionRole-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nfl-pickem-SchedulerRole-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: [lambda.amazonaws.com, scheduler.amazonaws.com]
 
 Outputs:
   DeployRoleArn:

@@ -15,7 +15,7 @@ check:              ## Everything CI checks, locally
 lint:               ## ruff (with Bandit security rules) and cfn-lint on the template
 	$(PYTHON) -m ruff check .
 	$(PYTHON) -m ruff format --check .
-	.venv/bin/cfn-lint template.yaml --ignore-checks W3002  # W3002: CodeUri is a local path until `aws cloudformation package`
+	.venv/bin/cfn-lint template.yaml deploy-role.yaml --ignore-checks W3002  # W3002: CodeUri is a local path until `aws cloudformation package`
 
 test:
 	$(PYTHON) -m pytest

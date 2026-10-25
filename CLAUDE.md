@@ -12,7 +12,7 @@
 
 ## Deploying
 
-- A merge to main deploys automatically: the `deploy` job in `ci.yml` runs `./deploy.sh` after the checks pass, in the `production` environment (main only) using GitHub OIDC. It skips changes that only touch docs, tests, CI config or dev tooling; `gh workflow run ci.yml --ref main` forces a deploy.
+- A merge to main deploys automatically: the `deploy` job in `ci.yml` runs `./deploy.sh` after the checks pass, in the `production` environment (main only) using GitHub OIDC. Every push to main deploys (an unchanged stack is a no-op), so a failed deploy is retried by the next push; `gh workflow run ci.yml --ref main` forces one.
 - The deploy role is a separate stack, `nfl-pickem-deploy-role` (`deploy-role.yaml`), deployed once by hand (the command is in the file). Its ARN is the `AWS_DEPLOY_ROLE_ARN` secret in the `production` environment. Change it only with admin credentials (`aws login`).
 - Manual fallback: `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh [Param=value ...]`.
 - `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly (manual deploys), or set it in the stack once by hand.
