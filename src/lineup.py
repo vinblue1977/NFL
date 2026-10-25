@@ -54,7 +54,6 @@ SWID_PARAM = os.environ.get("ESPN_SWID_PARAM", "/nfl-pickem/espn-swid")
 CLOSE_CALL = 3.0  # projected points
 ALERT_WINDOW = 2 * 3600  # alert runs only matter just before a kickoff (seconds)
 ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
-NO_ALERT = "none"  # SSM can't hold an empty value
 RUNS = {"thursday", "saturday", "sunday", "alert", "waivers"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
@@ -656,27 +655,42 @@ def alert_name(season, week):
     return f"{ALERT_PREFIX}/{season}-w{week}"
 
 
-def alert_signature(actions):
-    return hashlib.sha256("\n".join(sorted(actions)).encode()).hexdigest() if actions else NO_ALERT
+def digest(action):
+    return hashlib.sha256(action.encode()).hexdigest()[:12]
 
 
-def alert_changed(season, week, actions):
-    """True if these alert moves differ from the last alert sent this week.
-
-    An empty list clears the saved alert, so a problem that comes back is reported again.
-    """
-    sig = alert_signature(actions)
+def sent_alerts(season, week):
+    """Digests of the moves already emailed this week. SSM trouble reads as 'none', so an alert is never lost."""
     try:
-        last = ssm.get_parameter(Name=alert_name(season, week))["Parameter"]["Value"]
+        return set(json.loads(ssm.get_parameter(Name=alert_name(season, week))["Parameter"]["Value"]))
     except ssm.exceptions.ParameterNotFound:
-        last = NO_ALERT
-    if not actions and last != NO_ALERT:
-        remember_alert(season, week, actions)
-    return bool(actions) and sig != last
+        return set()
+    except Exception:
+        log.exception("couldn't read the saved alerts; treating every move as new")
+        return set()
+
+
+def save_alerts(season, week, digests):
+    try:
+        ssm.put_parameter(Name=alert_name(season, week), Value=json.dumps(sorted(digests)), Type="String", Overwrite=True)
+    except Exception:  # the email already went out; a missed save only risks one repeat
+        log.exception("couldn't save the sent alerts")
+
+
+def alert_is_new(season, week, actions):
+    """True if any of these moves wasn't in an earlier alert this week."""
+    sent = sent_alerts(season, week)
+    return any(digest(a) not in sent for a in actions)
 
 
 def remember_alert(season, week, actions):
-    ssm.put_parameter(Name=alert_name(season, week), Value=alert_signature(actions), Type="String", Overwrite=True)
+    save_alerts(season, week, sent_alerts(season, week) | {digest(a) for a in actions})
+
+
+def forget_if_settled(season, week, roster, lineup):
+    """Clear the saved alerts once no change is needed at all (not just none soon), so a returning problem alerts again."""
+    if not moves(roster, lineup, "sunday") and sent_alerts(season, week):
+        save_alerts(season, week, set())
 
 
 def waiver_run(season, week, team, slots, test):
@@ -733,7 +747,7 @@ def handler(event, context):
 
     if run == "alert" and not test and not moves(roster, lineup, run, now_ct):
         # Nothing to change on projections alone, so skip the AI review and the email.
-        alert_changed(season, week, [])
+        forget_if_settled(season, week, roster, lineup)
         log.info("week %s alert: lineup is still right, no email", week)
         return {"status": "no changes", "week": week, "run": run}
 
@@ -757,10 +771,10 @@ def handler(event, context):
     actions = moves(roster, lineup, run, now_ct)
     if run == "alert" and not test:
         if not actions:  # the AI review can undo a projection-only change
-            alert_changed(season, week, actions)
+            forget_if_settled(season, week, roster, lineup)
             log.info("week %s alert: lineup is still right, no email", week)
             return {"status": "no changes", "week": week, "run": run}
-        if not alert_changed(season, week, actions):  # you were already told; an ignored move shouldn't repeat
+        if not alert_is_new(season, week, actions):  # you were already told; an ignored move shouldn't repeat
             log.info("week %s alert: same moves as the last alert, no email", week)
             return {"status": "unchanged", "week": week, "run": run}
     if run == "alert":
