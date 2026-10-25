@@ -43,6 +43,8 @@ USE_AI = os.environ.get("USE_AI", "true").lower() == "true"
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
+PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
+RESULTS_PARAM = os.environ.get("RESULTS_PARAM", "/nfl-pickem/results")
 ODDS_KEY_PARAM = os.environ.get("ODDS_API_KEY_PARAM", "/nfl-pickem/odds-api-key")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
 FAILURE_TOPIC_ARN = os.environ.get("FAILURE_TOPIC_ARN", "")
@@ -292,15 +294,102 @@ def state_name(season, week):
 
 
 def load_locked(season, week):
-    try:
-        val = ssm.get_parameter(Name=state_name(season, week))["Parameter"]["Value"]
-        return json.loads(val)
-    except ssm.exceptions.ParameterNotFound:
-        return {}
+    return load_param(state_name(season, week), {})
 
 
 def save_locked(season, week, locked):
-    ssm.put_parameter(Name=state_name(season, week), Value=json.dumps(locked), Type="String", Overwrite=True)
+    save_param(state_name(season, week), locked)
+
+
+# ------------------------------------------------------- results tracking
+
+
+def load_param(name, default):
+    try:
+        return json.loads(ssm.get_parameter(Name=name)["Parameter"]["Value"])
+    except ssm.exceptions.ParameterNotFound:
+        return default
+
+
+def save_param(name, value):
+    ssm.put_parameter(Name=name, Value=json.dumps(value), Type="String", Overwrite=True)
+
+
+def record_picks(season, week, picks, ai):
+    """Remember what was emailed (Thursday and Sunday add to the same week) so it can be scored later."""
+    name = f"{PICKS_PREFIX}/{season}-w{week}"
+    rec = load_param(name, {"picks": {}})
+    rec["picks"].update({p.game_id: {"winner": p.winner, "confidence": p.confidence, "ai": ai} for p in picks})
+    save_param(name, rec)
+
+
+def final_winners(scoreboard):
+    """{game id: winning team abbreviation, or None for a tie} for the games that are over."""
+    out = {}
+    for ev in scoreboard.get("events", []):
+        if not ev["status"]["type"].get("completed"):
+            continue
+        comp = ev["competitions"][0]["competitors"]
+        out[ev["id"]] = next((c["team"]["abbreviation"] for c in comp if c.get("winner")), None)
+    return out
+
+
+def score_week(season, week):
+    """Score last week's emailed picks once every one of those games is final. Safe to call repeatedly."""
+    results = load_param(f"{RESULTS_PARAM}/{season}", {})
+    if str(week) in results:
+        return
+    rec = load_param(f"{PICKS_PREFIX}/{season}-w{week}", None)
+    if not rec or not rec["picks"]:
+        return
+    winners = final_winners(fetch(f"scoreboard?dates={season}&seasontype={REGULAR_SEASON}&week={week}"))
+    waiting = [gid for gid in rec["picks"] if gid not in winners]
+    if waiting:
+        log.info("week %s not scored yet: %d picked game(s) not final or not on the scoreboard", week, len(waiting))
+        return
+    right = {gid: p for gid, p in rec["picks"].items() if winners[gid] == p["winner"]}
+
+    def tally(picks):
+        return {"correct": sum(gid in right for gid in picks), "total": len(picks)}
+
+    results[str(week)] = {
+        **tally(rec["picks"]),
+        "points": sum(p["confidence"] for p in right.values()),
+        "possible": sum(p["confidence"] for p in rec["picks"].values()),
+        "ai": tally({gid: p for gid, p in rec["picks"].items() if p.get("ai")}),
+    }
+    save_param(f"{RESULTS_PARAM}/{season}", results)
+
+
+def record_line(season, week):
+    """'Week 6: 11/14 correct, 87/105 points. Season: ...' for the last scored week, or '' if there is none."""
+    results = load_param(f"{RESULTS_PARAM}/{season}", {})
+    last = results.get(str(week))
+    if not last:
+        return ""
+    line = f"Week {week}: {last['correct']}/{last['total']} correct, {last['points']}/{last['possible']} points"
+    if len(results) > 1:
+        total = {k: sum(r[k] for r in results.values()) for k in ("correct", "total", "points", "possible")}
+        line += (
+            f". Season ({len(results)} scored weeks): {total['correct']}/{total['total']} correct, "
+            f"{total['points']}/{total['possible']} points"
+        )
+    ai = {k: sum(r["ai"][k] for r in results.values()) for k in ("correct", "total")}
+    odds = {k: sum(r[k] - r["ai"][k] for r in results.values()) for k in ("correct", "total")}
+    if ai["total"] and odds["total"]:  # both kinds of pick on record: show how they compare
+        line += f". Odds picks: {odds['correct']}/{odds['total']} correct; AI picks: {ai['correct']}/{ai['total']} correct"
+    return line + "."
+
+
+def last_week_record(season, week, score=True):
+    """Score the previous week if it just finished and describe it; never lets a tracking problem block the email."""
+    try:
+        if score:  # test runs report the record but leave no trace
+            score_week(season, week - 1)
+        return record_line(season, week - 1)
+    except Exception:
+        log.exception("couldn't score last week")
+        return ""
 
 
 # ------------------------------------------------------------ pick logic
@@ -452,7 +541,7 @@ def deliver(subject, html_body, text):
     )
 
 
-def send_email(subject, picks, games, notes, summary):
+def send_email(subject, picks, games, notes, summary, record=""):
     by_id = {g["id"]: g for g in games}
     rows, text_rows = [], []
     for p in sorted(picks, key=lambda p: -p.confidence):
@@ -470,13 +559,14 @@ def send_email(subject, picks, games, notes, summary):
 
     notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
     summary_html = f"<p>{html.escape(summary)}</p>" if summary else ""
+    record_html = f"<p><b>{html.escape(record)}</b></p>" if record else ""
     body = (
-        f"<html><body style='font-family:sans-serif'>{summary_html}"
+        f"<html><body style='font-family:sans-serif'>{record_html}{summary_html}"
         "<table style='border-collapse:collapse' border='1'>"
         "<tr><th>Pts</th><th>Pick</th><th>Game</th><th>Kickoff (CT)</th><th>Line</th><th>Why</th></tr>"
         f"{''.join(rows)}</table>{notes_html}</body></html>"
     )
-    text = "\n".join(([summary, ""] if summary else []) + text_rows + [""] + notes)
+    text = "\n".join(([record, ""] if record else []) + ([summary, ""] if summary else []) + text_rows + [""] + notes)
 
     deliver(subject, body, text)
 
@@ -576,10 +666,11 @@ def run_pickem(event):
         used = ", ".join(f"{v['winner']} ({v['confidence']})" for v in locked.values())
         locked_note = f"Already locked earlier this week (not part of this set): {used}."
 
-    summary = ""
+    summary, ai_used = "", False
     if USE_AI:
         try:
             picks, summary = ai_picks(pool, available, locked_note)
+            ai_used = True
             notes.append(f"Picks by {MODEL_ID} on Amazon Bedrock.")
         except Exception as exc:  # any AI failure still gets an email
             log.exception("AI picks failed")
@@ -594,7 +685,12 @@ def run_pickem(event):
 
     label = "Thursday" if run == "thursday" else "Sunday/Monday"
     subject = f"{'[TEST] ' if test else ''}NFL Week {week} Pick'em - {label}"
-    send_email(subject, picks, games, notes, summary)
+    send_email(subject, picks, games, notes, summary, last_week_record(season, week, score=not test))
+    if not test:
+        try:
+            record_picks(season, week, picks, ai_used)
+        except Exception:  # the email went out; a missed record only leaves that week unscored
+            log.exception("couldn't record the picks")
     if run == "thursday" and not test:
         # After the send: a failed email must not leave the week locked, or the retry would send nothing.
         for p in picks:

@@ -1,5 +1,6 @@
 """End-to-end handler flows, email builders and AI prompts, with every network call stubbed."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -34,6 +35,7 @@ class TestPickemHandler:
     @pytest.fixture
     def env(self, monkeypatch):
         """Thursday game (g1) plus two Sunday games; returns the recorded side effects."""
+        monkeypatch.setattr(app, "ssm", FakeSsm())
         weekday = datetime(2026, 10, 22, 20, tzinfo=lineup.CENTRAL)  # a Thursday
         games = [
             pgame("g1", "KC", "LV", 0, fav="KC", fav_by=7),
@@ -343,3 +345,37 @@ class TestLineupAiPrompt:
         assert "SLOTS: QB" in p and "id=1 P1 QB KC" in p and "P1 (QB) is questionable" in p
         assert "KC: QB (Q) - Questionable" in p and "headline - body" in p
         assert result["QB"] is qb and reasons == {1: "keep"} and summary == "s"
+
+
+class TestPickemRecording:
+    @pytest.fixture
+    def fake(self, monkeypatch):
+        fake = FakeSsm()
+        monkeypatch.setattr(app, "ssm", fake)
+        monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
+        monkeypatch.setattr(app, "parse_games", lambda sb: [pgame("g2", "BUF", "NE", 72, fav="BUF", fav_by=3)])
+        monkeypatch.setattr(app, "add_kalshi", lambda games: 0)
+        monkeypatch.setattr(app, "odds_api_key", lambda: None)
+        monkeypatch.setattr(app, "send_email", lambda *a: None)
+        monkeypatch.setattr(app, "USE_AI", False)
+        return fake
+
+    def test_sent_picks_are_recorded_and_test_runs_are_not(self, fake):
+        app.run_pickem({"run": "sunday", "test": True})
+        assert not fake.values
+        app.run_pickem({"run": "sunday"})
+        assert json.loads(fake.values["/nfl-pickem/picks/2026-w7"])["picks"] == {
+            "g2": {"winner": "BUF", "confidence": 1, "ai": False}
+        }
+
+    def test_last_weeks_record_reaches_the_email(self, fake, monkeypatch):
+        sent = []
+        monkeypatch.setattr(app, "send_email", lambda *a: sent.append(a))
+        monkeypatch.setattr(app, "last_week_record", lambda season, week, score=True: f"record for w{week - 1}, score={score}")
+        app.run_pickem({"run": "sunday"})
+        app.run_pickem({"run": "sunday", "test": True})
+        assert [a[5] for a in sent] == ["record for w6, score=True", "record for w6, score=False"]
+
+    def test_a_recording_failure_does_not_fail_the_run(self, fake, monkeypatch):
+        monkeypatch.setattr(app, "record_picks", lambda *a: (_ for _ in ()).throw(RuntimeError("ssm down")))
+        assert app.run_pickem({"run": "sunday"})["status"] == "sent"
