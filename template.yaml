@@ -86,6 +86,10 @@ Parameters:
     Type: String
     Default: cron(0 8 ? * TUE *)
     Description: Central time. Free-agent/waiver pickups ahead of the Wednesday waiver run; emails only if there are any.
+  RecapSchedule:
+    Type: String
+    Default: cron(30 7 ? * TUE,WED *)
+    Description: Central time. Recap of the finished week (points vs projections, best lineup in hindsight). Waits until every game is final; Wednesday only retries a Tuesday that wasn't ready (a week is recapped once).
 
 Conditions:
   MakeSenderIdentity: !Equals [!Ref CreateSenderIdentity, "true"]
@@ -213,6 +217,18 @@ Resources:
     Properties:
       LogGroupName: /aws/lambda/nfl-fantasy-lineup
       RetentionInDays: 30
+
+  WeeklyRecap:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-recap
+      ScheduleExpression: !Ref RecapSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "recap"}'
 
   # Emails when a run never finished (timeout, out of memory, no invoke), which the handlers can't report themselves.
   WatchdogFunction:

@@ -12,7 +12,7 @@ SLOTS = [("QB", 0), ("RB1", 2), ("RB2", 2), ("WR1", 4), ("FLEX", 23), ("D/ST", 1
 FLEX_OK = {23, 2, 4, 6}
 
 
-def player(pid, pos, proj, slot=BENCH, status="ACTIVE", game=True, locked=False, eligible=None):
+def player(pid, pos, proj, slot=BENCH, status="ACTIVE", game=True, locked=False, eligible=None, actual=0.0):
     elig = {"QB": {0, 7}, "RB": {2, 3, 23, 7}, "WR": {4, 3, 5, 23, 7}, "D/ST": {16}}[pos] if eligible is None else eligible
     kickoff = datetime(2026, 10, 25, 12, tzinfo=UTC)
     g = {"kickoff_ct": kickoff, "started": locked, "line": "-3", "over_under": 44} if game else None
@@ -24,6 +24,7 @@ def player(pid, pos, proj, slot=BENCH, status="ACTIVE", game=True, locked=False,
         "slot": slot,
         "status": status,
         "proj": proj,
+        "actual": actual,
         "game": g,
         "team": "KC" if game else "",
         "opp": "vs LV" if game else "BYE",
