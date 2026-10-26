@@ -495,6 +495,9 @@ def claude_tool_call(prompt, tool_name, description, schema):
     Bedrock doesn't support structured outputs, so the answer comes back as the
     input of a tool call and the caller validates it.
     """
+    if "anthropic" not in MODEL_ID:
+        return converse_tool_call(prompt, tool_name, description, schema)
+
     from anthropic import AnthropicBedrock
 
     client = AnthropicBedrock(aws_region=REGION)
@@ -513,6 +516,30 @@ def claude_tool_call(prompt, tool_name, description, schema):
     if call is None:
         raise RuntimeError(f"model did not call {tool_name} (stop_reason={response.stop_reason})")
     return call.input
+
+
+def converse_tool_call(prompt, tool_name, description, schema):
+    """Same contract as claude_tool_call for non-Claude models (Nova etc.), via the Converse API."""
+    import boto3
+
+    response = boto3.client("bedrock-runtime", region_name=REGION).converse(
+        modelId=MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": f"{prompt}\n\nSubmit your answer by calling {tool_name}."}]}],
+        inferenceConfig={"maxTokens": 8000, "temperature": 0},
+        toolConfig={
+            "tools": [{"toolSpec": {"name": tool_name, "description": description, "inputSchema": {"json": schema}}}],
+            "toolChoice": {"tool": {"name": tool_name}},
+        },
+    )
+    log.info("usage: %s", response.get("usage"))
+    stop = response.get("stopReason")
+    if stop == "content_filtered":
+        raise RuntimeError("model declined the request")
+    for block in response["output"]["message"]["content"]:
+        call = block.get("toolUse")
+        if call and call["name"] == tool_name:
+            return call["input"]
+    raise RuntimeError(f"model did not call {tool_name} (stop_reason={stop})")
 
 
 def ai_picks(games, values, locked_note):

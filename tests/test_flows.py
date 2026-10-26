@@ -225,6 +225,39 @@ class TestClaudeToolCall:
             run()
 
 
+class TestConverseToolCall:
+    def run(self, monkeypatch, response):
+        import boto3
+
+        seen = {}
+
+        class Client:
+            def converse(self, **kw):
+                seen.update(kw)
+                return response
+
+        monkeypatch.setattr(boto3, "client", lambda *a, **kw: Client())
+        monkeypatch.setattr(app, "MODEL_ID", "us.amazon.nova-pro-v1:0")
+        return seen, lambda: app.claude_tool_call("prompt", "submit", "desc", {"type": "object"})
+
+    def message(self, *blocks, stop="tool_use"):
+        return {"output": {"message": {"content": list(blocks)}}, "stopReason": stop, "usage": {}}
+
+    def test_non_claude_models_use_converse(self, monkeypatch):
+        seen, run = self.run(monkeypatch, self.message({"text": "hi"}, {"toolUse": {"name": "submit", "input": {"a": 1}}}))
+        assert run() == {"a": 1}
+        assert seen["modelId"] == "us.amazon.nova-pro-v1:0"
+        assert seen["toolConfig"]["toolChoice"] == {"tool": {"name": "submit"}}
+
+    def test_filtered_and_missing_tool_call_raise(self, monkeypatch):
+        _, run = self.run(monkeypatch, self.message(stop="content_filtered"))
+        with pytest.raises(RuntimeError, match="declined"):
+            run()
+        _, run = self.run(monkeypatch, self.message({"text": "no"}, stop="end_turn"))
+        with pytest.raises(RuntimeError, match="did not call submit"):
+            run()
+
+
 def lplayer(pid, pos, proj, **kw):
     return player(pid, pos, proj, **kw)
 
