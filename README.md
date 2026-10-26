@@ -125,7 +125,7 @@ docs-only pushes start no run. See `CLAUDE.md` for the PR workflow and the deplo
 
 - First deploy: click the SES verification link AWS emails to the sender address. Emails can't be sent until you do.
 - AI mode uses Claude Opus 4.6 through bedrock-runtime (`us.anthropic.claude-opus-4-6-v1`), which needs its model agreement in us-east-2.
-- `ModelId=us.amazon.nova-pro-v1:0` switches both Lambdas to Amazon Nova Pro through the Converse API (about $0.80/$3.20 per million input/output tokens, versus Opus's much higher price). Any non-Anthropic ID takes that path. Pass it explicitly: `./deploy.sh ModelId=us.amazon.nova-pro-v1:0`.
+- `ModelId=us.amazon.nova-pro-v1:0` switches both Lambdas to Amazon Nova Pro through the Converse API (about $0.80/$3.20 per million input/output tokens, versus Opus's much higher price). Any non-Anthropic ID takes that path. Effort and thinking are Claude-only and ignored for Nova. Set it once by hand with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.amazon.nova-pro-v1:0`; CloudFormation keeps the value on later auto-deploys.
 - `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly.
 - `AWS_BEARER_TOKEN_BEDROCK` in the shell makes the AWS CLI use a limited Bedrock-only IAM user. For manual deploys and admin commands, run them as `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ...`.
 

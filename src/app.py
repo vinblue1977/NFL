@@ -495,7 +495,7 @@ def claude_tool_call(prompt, tool_name, description, schema):
     Bedrock doesn't support structured outputs, so the answer comes back as the
     input of a tool call and the caller validates it.
     """
-    if "anthropic" not in MODEL_ID:
+    if not is_claude(MODEL_ID):
         return converse_tool_call(prompt, tool_name, description, schema)
 
     from anthropic import AnthropicBedrock
@@ -518,16 +518,44 @@ def claude_tool_call(prompt, tool_name, description, schema):
     return call.input
 
 
-def converse_tool_call(prompt, tool_name, description, schema):
-    """Same contract as claude_tool_call for non-Claude models (Nova etc.), via the Converse API."""
-    import boto3
+def inline_refs(schema):
+    """Resolve pydantic's $defs/$ref so models with limited JSON Schema support can read the schema."""
+    defs = schema.get("$defs", {})
 
-    response = boto3.client("bedrock-runtime", region_name=REGION).converse(
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
+            return {k: walk(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(schema)
+
+
+def is_claude(model_id):
+    return "anthropic" in model_id.split(".")[:2]
+
+
+def converse_tool_call(prompt, tool_name, description, schema):
+    """Same contract as claude_tool_call for non-Claude models (Nova etc.), via the Converse API.
+
+    Effort and thinking are Claude-only settings and are ignored here.
+    """
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=REGION,
+        config=Config(connect_timeout=10, read_timeout=300, retries={"max_attempts": 2}),
+    )
+    response = client.converse(
         modelId=MODEL_ID,
         messages=[{"role": "user", "content": [{"text": f"{prompt}\n\nSubmit your answer by calling {tool_name}."}]}],
         inferenceConfig={"maxTokens": 8000, "temperature": 0},
         toolConfig={
-            "tools": [{"toolSpec": {"name": tool_name, "description": description, "inputSchema": {"json": schema}}}],
+            "tools": [
+                {"toolSpec": {"name": tool_name, "description": description, "inputSchema": {"json": inline_refs(schema)}}}
+            ],
             "toolChoice": {"tool": {"name": tool_name}},
         },
     )
@@ -535,6 +563,8 @@ def converse_tool_call(prompt, tool_name, description, schema):
     stop = response.get("stopReason")
     if stop == "content_filtered":
         raise RuntimeError("model declined the request")
+    if stop == "max_tokens":
+        raise RuntimeError("model ran out of tokens before finishing the answer")
     for block in response["output"]["message"]["content"]:
         call = block.get("toolUse")
         if call and call["name"] == tool_name:
