@@ -23,8 +23,9 @@ Parameters:
     Type: String
     AllowedValues:
       - us.anthropic.claude-opus-4-6-v1
+      - us.amazon.nova-pro-v1:0
     Default: us.anthropic.claude-opus-4-6-v1
-    Description: Bedrock inference profile; the account has a model agreement for this one.
+    Description: Bedrock inference profile. Claude uses the Anthropic SDK (needs a model agreement); Nova uses the Converse API.
   Effort:
     Type: String
     AllowedValues: [low, medium, high]
@@ -132,6 +133,8 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-*
                   - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-*
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-pro-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0
               - Effect: Allow
                 Action: ses:SendEmail
                 Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*

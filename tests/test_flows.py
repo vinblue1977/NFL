@@ -225,6 +225,55 @@ class TestClaudeToolCall:
             run()
 
 
+class TestConverseToolCall:
+    def run(self, monkeypatch, response):
+        import boto3
+
+        seen = {}
+
+        class Client:
+            def converse(self, **kw):
+                seen.update(kw)
+                return response
+
+        monkeypatch.setattr(boto3, "client", lambda *a, **kw: Client())
+        monkeypatch.setattr(app, "MODEL_ID", "us.amazon.nova-pro-v1:0")
+        return seen, lambda: app.claude_tool_call("prompt", "submit", "desc", {"type": "object"})
+
+    def message(self, *blocks, stop="tool_use"):
+        return {"output": {"message": {"content": list(blocks)}}, "stopReason": stop, "usage": {}}
+
+    def test_non_claude_models_use_converse(self, monkeypatch):
+        seen, run = self.run(monkeypatch, self.message({"text": "hi"}, {"toolUse": {"name": "submit", "input": {"a": 1}}}))
+        assert run() == {"a": 1}
+        assert seen["modelId"] == "us.amazon.nova-pro-v1:0"
+        assert seen["toolConfig"]["toolChoice"] == {"tool": {"name": "submit"}}
+
+    def test_filtered_truncated_and_missing_tool_call_raise(self, monkeypatch):
+        _, run = self.run(monkeypatch, self.message(stop="content_filtered"))
+        with pytest.raises(RuntimeError, match="declined"):
+            run()
+        _, run = self.run(monkeypatch, self.message(stop="max_tokens"))
+        with pytest.raises(RuntimeError, match="out of tokens"):
+            run()
+        _, run = self.run(monkeypatch, self.message({"text": "no"}, stop="end_turn"))
+        with pytest.raises(RuntimeError, match="did not call submit"):
+            run()
+
+
+class TestModelRouting:
+    def test_claude_ids_stay_on_the_anthropic_path(self):
+        for mid in ("us.anthropic.claude-opus-4-6-v1", "anthropic.claude-opus-4-6-v1", "eu.anthropic.claude-x"):
+            assert app.is_claude(mid)
+        for mid in ("us.amazon.nova-pro-v1:0", "amazon.nova-pro-v1:0", "openai.gpt-oss-120b-1:0"):
+            assert not app.is_claude(mid)
+
+    def test_inline_refs_leaves_no_refs_in_the_real_schemas(self):
+        for model in (app.PickSheet, lineup.LineupSheet, lineup.PickupSheet):
+            flat = json.dumps(app.inline_refs(model.model_json_schema()))
+            assert "$ref" not in flat and "$defs" not in flat
+
+
 def lplayer(pid, pos, proj, **kw):
     return player(pid, pos, proj, **kw)
 
