@@ -22,9 +22,10 @@ Parameters:
   ModelId:
     Type: String
     AllowedValues:
+      - us.anthropic.claude-sonnet-4-6
       - us.anthropic.claude-opus-4-6-v1
       - us.amazon.nova-pro-v1:0
-    Default: us.anthropic.claude-opus-4-6-v1
+    Default: us.anthropic.claude-sonnet-4-6
     Description: Bedrock inference profile. Claude uses the Anthropic SDK (needs a model agreement); Nova uses the Converse API.
   Effort:
     Type: String

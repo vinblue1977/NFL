@@ -105,7 +105,7 @@ Roughly **$0 a month** while AI is off, and a few dollars a month in season with
 from per-call figures, not from a bill:
 
 - **Lambda, SES, SSM, EventBridge Scheduler, CloudWatch logs:** inside the free tiers (about 15 short runs a week).
-- **Pick'em:** $0 with `UseAI=false` (the default). With `UseAI=true`, one Opus 4.6 call per run, about $0.15-0.30, so $0.30-0.60 a week.
+- **Pick'em:** $0 with `UseAI=false` (the default). With `UseAI=true`, one Claude call per run (the dollar figures in this section were estimated for Opus 4.6, so they are an upper bound for the Sonnet 4.6 default), about $0.15-0.30, so $0.30-0.60 a week.
 - **Lineup, `LineupUseAI=true` (the default):** one pickup call per non-alert run (about $0.15-0.25, four runs a week) plus a close-call review when there is one (about $0.15-0.30). Roughly $1-2 a week, or $20-35 over an 18-week season. Set `LineupUseAI=false` to drop it to $0.
 - **Alerts and the watchdog:** no AI unless an alert actually needs a lineup change reviewed.
 - **Kalshi, ESPN, The Odds API (free plan):** $0.
@@ -124,8 +124,8 @@ A merge to `main` that changes more than `*.md` deploys itself (GitHub Actions, 
 docs-only pushes start no run. See `CLAUDE.md` for the PR workflow and the deploy-role setup.
 
 - First deploy: click the SES verification link AWS emails to the sender address. Emails can't be sent until you do.
-- AI mode uses Claude Opus 4.6 through bedrock-runtime (`us.anthropic.claude-opus-4-6-v1`), which needs its model agreement in us-east-2.
-- `ModelId=us.amazon.nova-pro-v1:0` switches both Lambdas to Amazon Nova Pro through the Converse API (about $0.80/$3.20 per million input/output tokens, versus Opus's much higher price). Any non-Anthropic ID takes that path. Effort and thinking are Claude-only and ignored for Nova. Set it once by hand with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.amazon.nova-pro-v1:0`; CloudFormation keeps the value on later auto-deploys.
+- AI mode uses Claude Sonnet 4.6 through bedrock-runtime (`us.anthropic.claude-sonnet-4-6`) by default, which needs its model agreement in us-east-2. `ModelId=us.anthropic.claude-opus-4-6-v1` switches to Opus 4.6. Sonnet 4.6 was picked after a one-off side-by-side on a single week's waiver pickups (same data): it and Opus 4.6 made the same move with equally specific reasons, while Nova Pro made three generic moves that dropped star players. Because CloudFormation keeps earlier parameter values, move an existing stack with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.anthropic.claude-sonnet-4-6`.
+- `ModelId=us.amazon.nova-pro-v1:0` switches both Lambdas to Amazon Nova Pro through the Converse API (about $0.80/$3.20 per million input/output tokens, versus much higher prices for Claude, and quality noticeably worse on the pickups). Any non-Anthropic ID takes that path. Effort and thinking are Claude-only and ignored for Nova. Set it once by hand with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.amazon.nova-pro-v1:0`; CloudFormation keeps the value on later auto-deploys.
 - `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly.
 - `AWS_BEARER_TOKEN_BEDROCK` in the shell makes the AWS CLI use a limited Bedrock-only IAM user. For manual deploys and admin commands, run them as `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ...`.
 
