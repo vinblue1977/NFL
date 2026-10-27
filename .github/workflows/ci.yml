@@ -23,8 +23,8 @@ concurrency:
 # merge onto a moved base therefore deploys unchecked); a manual run (workflow_dispatch) does run them first. A run whose commit
 # is no longer the head of main skips its deploy step with a warning, unless only *.md files changed since (a docs-only push
 # starts no run, so nothing else would deploy it).
-# No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
-# PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
+# `make audit` checks the pinned Python packages; dependency-review flags a PR that adds or bumps a dependency with a known
+# vulnerability (advisory: not a required check); Dependabot raises PRs for the Actions pins.
 jobs:
   python:
     if: github.event_name != 'push'
@@ -53,6 +53,19 @@ jobs:
         run: make test
       - name: Dependency vulnerability audit
         run: make audit
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development  # the dev tools in requirements-dev.txt count too
+          comment-summary-in-pr: never  # the job log is enough; no write token needed
 
   # Lints the workflow files: actionlint (syntax, expressions, shell) and zizmor (Actions security).
   workflow-lint:
