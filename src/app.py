@@ -41,7 +41,7 @@ EASTERN = ZoneInfo("America/New_York")
 RECIPIENT = os.environ["RECIPIENT_EMAIL"]
 SENDER = os.environ["SENDER_EMAIL"]
 USE_AI = os.environ.get("USE_AI", "true").lower() == "true"
-MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 EFFORT = os.environ.get("EFFORT", "medium")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
