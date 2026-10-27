@@ -18,13 +18,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every push to main that changes more than *.md deploys the stack (./deploy.sh) once the checks pass (an unchanged package is a
-# no-op), using GitHub OIDC -> short-lived AWS credentials. A run whose commit is no longer the head of main skips its deploy
-# step with a warning, unless only *.md files changed since (a docs-only push starts no run, so nothing else would deploy it).
+# Every push to main that changes more than *.md deploys the stack (./deploy.sh) (an unchanged package is a no-op), using GitHub
+# OIDC -> short-lived AWS credentials. The checks ran on the PR, so a push to main doesn't repeat them (a direct admin push or a
+# merge onto a moved base therefore deploys unchecked); a manual run (workflow_dispatch) does run them first. A run whose commit
+# is no longer the head of main skips its deploy step with a warning, unless only *.md files changed since (a docs-only push
+# starts no run, so nothing else would deploy it).
 # No dependency-review job: it needs GitHub Advanced Security, which a private free-plan repo lacks. `make audit` (also run on
 # PRs) checks the pinned Python packages; Dependabot raises PRs for the Actions pins.
 jobs:
   python:
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
     timeout-minutes: 15
     steps:
@@ -53,6 +56,7 @@ jobs:
 
   # Lints the workflow files: actionlint (syntax, expressions, shell) and zizmor (Actions security).
   workflow-lint:
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04  # pinned; ubuntu-latest moves to 26 on 2026-10-19
     timeout-minutes: 5
     steps:
@@ -77,8 +81,8 @@ jobs:
           annotations: true
 
   deploy:
-    needs: [python, workflow-lint]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: [python, workflow-lint]  # skipped on push, so only a manual run waits on them
+    if: ${{ !cancelled() && !failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     concurrency:
       group: deploy-production
       cancel-in-progress: false
@@ -95,7 +99,7 @@ jobs:
       - name: Check this commit is still the head of main
         id: head
         # Deploys are serialized but not ordered, and this job may have queued behind another one, so check right
-        # before deploying. If a newer commit's checks fail, fix forward: the next push deploys.
+        # before deploying. If a deploy fails or ships a bad commit, fix forward: the next push deploys.
         run: |
           head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
           [ -n "$head" ] || { echo "::error::Could not read the head of main."; exit 1; }
