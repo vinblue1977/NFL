@@ -1,2 +1,2 @@
-anthropic[bedrock]==1.15.0
+anthropic[bedrock]==2.3.0
 tzdata
