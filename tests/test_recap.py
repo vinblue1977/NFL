@@ -186,7 +186,7 @@ class TestFetchLeagueViews:
 def playoff_league(*matchups, regular=15, last=17):
     periods = {str(w): [w] for w in range(1, last + 1)}
     return {
-        "settings": {"scheduleSettings": {"matchupPeriodCount": regular, "matchupPeriods": periods}},
+        "settings": {"scheduleSettings": {"matchupPeriodCount": regular, "matchupPeriods": periods, "playoffTeamCount": 4}},
         "schedule": [
             {"matchupPeriodId": period, "playoffTierType": tier, "home": {"teamId": h}, "away": {"teamId": a}}
             for period, tier, h, a in matchups
@@ -219,6 +219,16 @@ class TestQuietReason:
 
     def test_absent_from_a_fully_drawn_bracket_means_out(self):
         assert lineup.quiet_reason(playoff_league((16, "WINNERS_BRACKET", 3, 4)), self.ME, 16) == "out of the playoffs"
+
+    def test_with_possible_byes_absence_is_not_elimination(self):
+        league = playoff_league((16, "WINNERS_BRACKET", 3, 4))
+        league["settings"]["scheduleSettings"]["playoffTeamCount"] = 6
+        assert lineup.quiet_reason(league, self.ME, 16) is None
+
+    def test_final_period_uses_the_larger_of_the_two_sources(self):
+        league = playoff_league(last=15)
+        league["status"] = {"finalScoringPeriod": 17}
+        assert lineup.final_period(league) == 17 and lineup.quiet_reason(league, self.ME, 16) is None
 
     def test_a_half_empty_next_round_does_not_silence_you(self):
         league = playoff_league((17, "WINNERS_BRACKET", 3, None))  # round two waiting on a round-one winner

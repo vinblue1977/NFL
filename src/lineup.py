@@ -790,8 +790,8 @@ CONSOLATION_TIERS = {"WINNERS_CONSOLATION_LADDER", "LOSERS_CONSOLATION_LADDER"} 
 def final_period(league):
     """The league's last scoring period (week 17 in a typical league), or None if ESPN didn't say."""
     periods = league.get("settings", {}).get("scheduleSettings", {}).get("matchupPeriods") or {}
-    last = max((w for weeks in periods.values() for w in weeks), default=None)
-    return last or league.get("status", {}).get("finalScoringPeriod")
+    last = max((w for weeks in periods.values() for w in weeks), default=0)
+    return max(last, league.get("status", {}).get("finalScoringPeriod") or 0) or None
 
 
 def quiet_reason(league, team, week):
@@ -810,8 +810,11 @@ def quiet_reason(league, team, week):
     mine = [m for m in drawn if team["id"] in ((m.get("home") or {}).get("teamId"), (m.get("away") or {}).get("teamId"))]
     if mine:
         return "out of the playoffs" if all(m.get("playoffTierType") in CONSOLATION_TIERS for m in mine) else None
-    # Not in any matchup: only out if the bracket is fully drawn (a round-two slot can stay empty until round one ends).
-    if drawn and all((m.get("home") or {}).get("teamId") and (m.get("away") or {}).get("teamId") for m in drawn):
+    # Not in any matchup: only out if the bracket is fully drawn (a round-two slot can stay empty until round one ends)
+    # and the field has no first-round byes (a power-of-two playoff field).
+    teams = league.get("settings", {}).get("scheduleSettings", {}).get("playoffTeamCount")
+    filled = all((m.get("home") or {}).get("teamId") and (m.get("away") or {}).get("teamId") for m in drawn)
+    if teams in (2, 4, 8) and drawn and filled:
         return "out of the playoffs"
     return None
 

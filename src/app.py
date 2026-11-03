@@ -762,6 +762,9 @@ def run_pickem(event):
         log.info("no unplayed %s games in week %s", run, week)
         return {"status": "no target games"}
 
+    if run == "thursday" and any(g["kickoff_ct"].weekday() != 3 for g in targets):
+        notes.append("Includes Friday/Saturday games; their picks lock now, since Sunday's run would find them already played.")
+
     available = all_values - {v["confidence"] for v in locked.values()}
     # Games that kicked off without a lock (picked by hand) used points we don't
     # know; assume they took the lowest leftovers so ours keep the high values.
