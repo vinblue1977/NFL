@@ -749,7 +749,9 @@ def run_pickem(event):
         notes.append(f"No market price for {', '.join(no_market)}; used the ESPN line.")
 
     if run == "thursday":
-        targets = [g for g in games if g["kickoff_ct"].weekday() == 3 and not g["started"] and g["id"] not in locked]
+        # Thursday through Saturday: late-season weeks add Friday and Saturday games that Sunday's run would find already played.
+        early = (3, 4, 5)
+        targets = [g for g in games if g["kickoff_ct"].weekday() in early and not g["started"] and g["id"] not in locked]
         # Rank the whole week so the Thursday game gets a fair share of the points.
         pool = [g for g in games if not g["started"] and g["id"] not in locked]
     else:
@@ -759,6 +761,9 @@ def run_pickem(event):
     if not targets:
         log.info("no unplayed %s games in week %s", run, week)
         return {"status": "no target games"}
+
+    if run == "thursday" and any(g["kickoff_ct"].weekday() != 3 for g in targets):
+        notes.append("Includes Friday/Saturday games; their picks lock now, since Sunday's run would find them already played.")
 
     available = all_values - {v["confidence"] for v in locked.values()}
     # Games that kicked off without a lock (picked by hand) used points we don't

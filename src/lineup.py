@@ -108,8 +108,8 @@ def fantasy_get(path, player_filter=None):
         raise
 
 
-def fetch_league(season, week, matchups=False):
-    views = "view=mTeam&view=mRoster&view=mSettings" + ("&view=mMatchupScore" if matchups else "")
+def fetch_league(season, week):
+    views = "view=mTeam&view=mRoster&view=mSettings&view=mMatchupScore"
     league = fantasy_get(f"{season}/segments/0/leagues/{LEAGUE_ID}?{views}&scoringPeriodId={week}")
     return league, secret(SWID_PARAM)
 
@@ -784,6 +784,41 @@ def matchup_result(league, team, week):
     return None
 
 
+CONSOLATION_TIERS = {"WINNERS_CONSOLATION_LADDER", "LOSERS_CONSOLATION_LADDER"}  # ESPN's non-championship playoff games
+
+
+def final_period(league):
+    """The league's last scoring period (week 17 in a typical league), or None if ESPN didn't say."""
+    periods = league.get("settings", {}).get("scheduleSettings", {}).get("matchupPeriods") or {}
+    last = max((w for weeks in periods.values() for w in weeks), default=0)
+    return max(last, league.get("status", {}).get("finalScoringPeriod") or 0) or None
+
+
+def quiet_reason(league, team, week):
+    """Why this week gets no fantasy email (season over, or knocked out of the playoffs), or None.
+
+    Fails open: if ESPN's data is missing or the playoff bracket isn't drawn yet, the email goes out.
+    """
+    last = final_period(league)
+    if last and week > last:
+        return "fantasy season over"
+    regular = league.get("settings", {}).get("scheduleSettings", {}).get("matchupPeriodCount")
+    if not regular or week <= regular:
+        return None
+    periods = matchup_periods(league, week)
+    drawn = [m for m in league.get("schedule", []) if m.get("matchupPeriodId") in periods]
+    mine = [m for m in drawn if team["id"] in ((m.get("home") or {}).get("teamId"), (m.get("away") or {}).get("teamId"))]
+    if mine:
+        return "out of the playoffs" if all(m.get("playoffTierType") in CONSOLATION_TIERS for m in mine) else None
+    # Not in any matchup: only out if the bracket is fully drawn (a round-two slot can stay empty until round one ends)
+    # and the field has no first-round byes (a power-of-two playoff field).
+    teams = league.get("settings", {}).get("scheduleSettings", {}).get("playoffTeamCount")
+    filled = all((m.get("home") or {}).get("teamId") and (m.get("away") or {}).get("teamId") for m in drawn)
+    if teams in (2, 4, 8) and drawn and filled:
+        return "out of the playoffs"
+    return None
+
+
 def recap_week(sb):
     """The week the recap is about: ESPN's current week, or the one before it once ESPN has rolled over to the next."""
     week = sb.get("week", {}).get("number")
@@ -878,8 +913,12 @@ def recap_run(season, sb, test):
     if week in sent_weeks and not test:  # the Wednesday run is only a retry for a Tuesday that wasn't ready
         log.info("week %s recap already sent", week)
         return {"status": "already sent", "week": week, "run": "recap"}
-    league, swid = fetch_league(season, week, matchups=True)
+    league, swid = fetch_league(season, week)
     team = my_team(league, swid)
+    reason = None if test else quiet_reason(league, team, week)
+    if reason:
+        log.info("week %s recap: %s; no email", week, reason)
+        return {"status": reason, "week": week, "run": "recap"}
     slots = lineup_slots(league)
     roster = players(team, games, week)
     facts = recap_facts(roster, slots, matchup_result(league, team, week))
@@ -961,6 +1000,10 @@ def run_lineup(event):
         week += 1  # ESPN still reports the finished week; roster, projections and byes should be for the next one
     league, swid = fetch_league(season, week)
     team = my_team(league, swid)
+    reason = None if test else quiet_reason(league, team, week)
+    if reason:
+        log.info("week %s %s: %s; no email", week, run, reason)
+        return {"status": reason, "week": week, "run": run}
     slots = lineup_slots(league)
     if run == "waivers":
         return waiver_run(season, week, team, slots, test)

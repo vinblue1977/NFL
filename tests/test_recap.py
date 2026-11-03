@@ -175,13 +175,81 @@ class TestRecapRun:
 
 
 class TestFetchLeagueViews:
-    def test_matchup_scores_are_only_requested_for_the_recap(self, monkeypatch):
+    def test_matchup_scores_are_always_requested(self, monkeypatch):
         urls = []
         monkeypatch.setattr(lineup, "fantasy_get", lambda path, f=None: urls.append(path) or {})
         monkeypatch.setattr(lineup, "secret", lambda name: "swid")
         lineup.fetch_league(2026, 7)
-        lineup.fetch_league(2026, 7, matchups=True)
-        assert "mMatchupScore" not in urls[0] and "mMatchupScore" in urls[1] and "scoringPeriodId=7" in urls[1]
+        assert "mMatchupScore" in urls[0] and "scoringPeriodId=7" in urls[0]
+
+
+def playoff_league(*matchups, regular=15, last=17):
+    periods = {str(w): [w] for w in range(1, last + 1)}
+    return {
+        "settings": {"scheduleSettings": {"matchupPeriodCount": regular, "matchupPeriods": periods, "playoffTeamCount": 4}},
+        "schedule": [
+            {"matchupPeriodId": period, "playoffTierType": tier, "home": {"teamId": h}, "away": {"teamId": a}}
+            for period, tier, h, a in matchups
+        ],
+    }
+
+
+class TestQuietReason:
+    ME = {"id": 1}
+
+    def test_regular_season_weeks_are_never_quiet(self):
+        assert lineup.quiet_reason(playoff_league((15, "NONE", 1, 2)), self.ME, 15) is None
+
+    def test_missing_league_data_fails_open(self):
+        assert lineup.quiet_reason({}, self.ME, 16) is None
+
+    def test_after_the_final_scoring_period_the_season_is_over(self):
+        assert lineup.quiet_reason(playoff_league(), self.ME, 18) == "fantasy season over"
+        assert lineup.quiet_reason({"status": {"finalScoringPeriod": 17}}, self.ME, 18) == "fantasy season over"
+        assert lineup.quiet_reason(playoff_league(), self.ME, 17) is None
+
+    def test_in_the_championship_bracket_is_not_quiet(self):
+        league = playoff_league((16, "WINNERS_BRACKET", 1, 3), (16, "WINNERS_BRACKET", 2, 4))
+        assert lineup.quiet_reason(league, self.ME, 16) is None
+
+    def test_a_consolation_game_means_out_of_the_playoffs(self):
+        for tier in ("LOSERS_CONSOLATION_LADDER", "WINNERS_CONSOLATION_LADDER"):
+            league = playoff_league((16, "WINNERS_BRACKET", 3, 4), (16, tier, 1, 2))
+            assert lineup.quiet_reason(league, self.ME, 16) == "out of the playoffs"
+
+    def test_absent_from_a_fully_drawn_bracket_means_out(self):
+        assert lineup.quiet_reason(playoff_league((16, "WINNERS_BRACKET", 3, 4)), self.ME, 16) == "out of the playoffs"
+
+    def test_with_possible_byes_absence_is_not_elimination(self):
+        league = playoff_league((16, "WINNERS_BRACKET", 3, 4))
+        league["settings"]["scheduleSettings"]["playoffTeamCount"] = 6
+        assert lineup.quiet_reason(league, self.ME, 16) is None
+
+    def test_final_period_uses_the_larger_of_the_two_sources(self):
+        league = playoff_league(last=15)
+        league["status"] = {"finalScoringPeriod": 17}
+        assert lineup.final_period(league) == 17 and lineup.quiet_reason(league, self.ME, 16) is None
+
+    def test_a_half_empty_next_round_does_not_silence_you(self):
+        league = playoff_league((17, "WINNERS_BRACKET", 3, None))  # round two waiting on a round-one winner
+        assert lineup.quiet_reason(league, self.ME, 17) is None
+
+    def test_bracket_not_drawn_yet_fails_open(self):
+        assert lineup.quiet_reason(playoff_league(), self.ME, 16) is None
+
+
+class TestQuietRuns:
+    def test_recap_and_waivers_stay_silent_when_knocked_out(self, monkeypatch):
+        league = playoff_league((16, "LOSERS_CONSOLATION_LADDER", 1, 2))
+        league["teams"] = [{"id": 1}]
+        monkeypatch.setattr(lineup, "fetch_league", lambda season, week: (league, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda league, swid: {"id": 1})
+        monkeypatch.setattr(lineup, "deliver", lambda *a: pytest.fail("no email expected"))
+        sb = {"season": {"type": 2, "year": 2026}, "week": {"number": 16}, "events": []}
+        monkeypatch.setattr(lineup, "fetch", lambda path: sb)
+        monkeypatch.setattr(lineup, "parse_games", lambda sb: [])
+        assert lineup.run_lineup({"run": "saturday"})["status"] == "out of the playoffs"
+        assert lineup.run_lineup({"run": "waivers"})["status"] == "out of the playoffs"
 
 
 class TestRecapReview:
