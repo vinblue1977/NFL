@@ -71,6 +71,14 @@ class TestPickemHandler:
         assert env.saved == [{"g1": {"winner": "KC", "confidence": 3}}]
         assert "Thursday" in env.sent[0][0]
 
+    def test_thursday_also_picks_friday_and_saturday_games(self, env):
+        # Late-season weeks have Friday/Saturday games; Sunday's run would find them already played.
+        env.games[1]["kickoff_ct"] = datetime(2026, 12, 25, 12, tzinfo=lineup.CENTRAL)  # a Friday
+        env.games[2]["kickoff_ct"] = datetime(2026, 12, 26, 19, tzinfo=lineup.CENTRAL)  # a Saturday
+        result = app.run_pickem({"run": "thursday"})
+        assert sorted(p["game_id"] for p in result["picks"]) == ["g1", "g2", "g3"]
+        assert set(env.saved[0]) == {"g1", "g2", "g3"}
+
     def test_thursday_test_run_does_not_lock(self, env):
         app.run_pickem({"run": "thursday", "test": True})
         assert not env.saved and env.sent[0][0].startswith("[TEST]")
