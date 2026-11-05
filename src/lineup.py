@@ -571,7 +571,7 @@ def html_block(title, detail, reason):
     """One player as a short block, not a table row: seven columns leave no room for a readable font on a phone."""
     return (
         "<div style='border-top:1px solid #777;padding:10px 0'>"
-        f"<div style='font-size:18px'>{title}</div>"
+        f"<div style='font-size:17px'>{title}</div>"
         + (f"<div>{html.escape(detail)}</div>" if detail else "")
         + (f"<div style='line-height:1.4;margin-top:4px'>{html.escape(reason)}</div>" if reason else "")
         + "</div>"
@@ -658,7 +658,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
         else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>"
     )
     body = (
-        f"<html><body style='font-family:sans-serif;font-size:17px'><p>{html.escape(team_name(team))}</p>{actions_html}"
+        f"<html><body style='font-family:sans-serif;font-size:16px'><p>{html.escape(team_name(team))}</p>{actions_html}"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + f"<h3>Lineup (projected {total:.1f})</h3>"
         + "".join(row(label, p, reasons, True) for label, p in lineup.items())
@@ -735,7 +735,7 @@ def waiver_run(season, week, team, slots, test):
         log.info("week %s waivers: nothing worth claiming, no email", week)
         return {"status": "no pickups", "week": week, "run": "waivers"}
     body = (
-        f"<html><body style='font-family:sans-serif;font-size:17px'><p>{html.escape(team_name(team))}</p>"
+        f"<html><body style='font-family:sans-serif;font-size:16px'><p>{html.escape(team_name(team))}</p>"
         + pickups_html(pickups, summary)
         + f"<p style='color:#555'>{html.escape(note)}</p></body></html>"
     )
@@ -881,13 +881,13 @@ def recap_rows(facts):
 
 def recap_email(team, week, facts):
     lines, rows = recap_summary(team, week, facts), recap_rows(facts)
-    cell = "<td style='padding:4px 8px;font-size:17px'>{}</td>"
+    cell = "<td style='padding:4px 8px;font-size:16px'>{}</td>"
     body = (
-        "<html><body style='font-family:sans-serif;font-size:17px'>"
+        "<html><body style='font-family:sans-serif;font-size:16px'>"
         + "".join(f"<p>{html.escape(ln)}</p>" for ln in lines)
         + "<table style='border-collapse:collapse' border='1'>"
         + "<tr>"
-        + "".join(f"<th style='font-size:17px'>{h}</th>" for h in ("Slot", "Player", "Actual", "Projected"))
+        + "".join(f"<th style='font-size:16px'>{h}</th>" for h in ("Slot", "Player", "Actual", "Projected"))
         + "</tr>"
         + "".join("<tr>" + "".join(cell.format(html.escape(c)) for c in row) + "</tr>" for row in rows)
         + "</table></body></html>"
