@@ -567,6 +567,17 @@ def why(p, reasons):
     return ""
 
 
+def html_row(cells, reason):
+    # The reason gets its own full-width line: as a last column, phone mail clients squeeze it to a sliver.
+    main = "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
+    if not reason:
+        return main
+    return (
+        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
+        f"{html.escape(str(reason))}</td></tr>"
+    )
+
+
 def row(label, p, reasons, as_html):
     if not p:
         cells = [label, "(empty)", "", "", "", "", "", ""]
@@ -583,14 +594,7 @@ def row(label, p, reasons, as_html):
             why(p, reasons),
         ]
     if as_html:
-        # "Why" goes on its own full-width line: as a last column, mail clients squeeze it to a sliver.
-        main = "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells[:-1]) + "</tr>"
-        if not cells[-1]:
-            return main
-        return main + (
-            f"<tr><td colspan='{len(cells) - 1}' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
-            f"{html.escape(str(cells[-1]))}</td></tr>"
-        )
+        return html_row(cells[:-1], cells[-1])
     return f"{cells[0]:<6} {cells[1]:<24} {cells[3]:<8} {cells[5]:>5}  {cells[6]:<12} {cells[7]}"
 
 
@@ -612,13 +616,7 @@ def pickups_html(pickups, summary):
             f"<p>{html.escape(summary)}</p>" if summary else ""
         )
     header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g"]
-    rows = "".join(
-        "<tr>"
-        + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in pickup_cells(*m)[:-1])
-        + f"</tr><tr><td colspan='5' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
-        f"{html.escape(str(pickup_cells(*m)[-1]))}</td></tr>"
-        for m in pickups
-    )
+    rows = "".join(html_row(c[:-1], c[-1]) for c in map(lambda m: pickup_cells(*m), pickups))
     return (
         "<h3>Free-agent pickups</h3>"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
