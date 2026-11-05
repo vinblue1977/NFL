@@ -567,14 +567,14 @@ def why(p, reasons):
     return ""
 
 
-def html_row(cells, reason):
-    # The reason gets its own full-width line: as a last column, phone mail clients squeeze it to a sliver.
-    main = "<tr>" + "".join(f"<td style='padding:4px 8px;font-size:18px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
-    if not reason:
-        return main
+def html_block(title, detail, reason):
+    """One player as a short block, not a table row: seven columns leave no room for a readable font on a phone."""
     return (
-        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 10px 8px;font-size:21px;line-height:1.4'>"
-        f"{html.escape(str(reason))}</td></tr>"
+        "<div style='border-top:1px solid #777;padding:10px 0'>"
+        f"<div style='font-size:24px'>{title}</div>"
+        + (f"<div>{html.escape(detail)}</div>" if detail else "")
+        + (f"<div style='line-height:1.4;margin-top:4px'>{html.escape(reason)}</div>" if reason else "")
+        + "</div>"
     )
 
 
@@ -594,7 +594,11 @@ def row(label, p, reasons, as_html):
             why(p, reasons),
         ]
     if as_html:
-        return html_row(cells[:-1], cells[-1])
+        if not p:
+            return html_block(f"<b>{html.escape(label)}</b> (empty)", "", "")
+        title = f"<b>{html.escape(label)} &nbsp;{html.escape(cells[1])}</b> ({html.escape(f'{cells[2]} {cells[3]}'.strip())})"
+        detail = " · ".join(c for c in (cells[4], f"Proj {cells[5]}", cells[6]) if c)
+        return html_block(title, detail, cells[7])
     return f"{cells[0]:<6} {cells[1]:<24} {cells[3]:<8} {cells[5]:>5}  {cells[6]:<12} {cells[7]}"
 
 
@@ -615,16 +619,18 @@ def pickups_html(pickups, summary):
         return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (
             f"<p>{html.escape(summary)}</p>" if summary else ""
         )
-    header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g"]
-    rows = "".join(html_row(c[:-1], c[-1]) for c in map(lambda m: pickup_cells(*m), pickups))
+    blocks = "".join(
+        html_block(
+            f"<b>Add {html.escape(add)}</b> ({html.escape(pos)})",
+            f"Proj/g {add_avg} · Drop {drop} ({drop_avg})",
+            reason,
+        )
+        for add, pos, add_avg, drop, drop_avg, reason in (pickup_cells(*m) for m in pickups)
+    )
     return (
         "<h3>Free-agent pickups</h3>"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
-        + "<table style='border-collapse:collapse' border='1'><tr>"
-        + "".join(f"<th style='font-size:18px'>{h}</th>" for h in header)
-        + "</tr>"
-        + rows
-        + "</table>"
+        + blocks
         + "<p style='color:#555'>Proj/g = ESPN rest-of-season points per game.</p>"
     )
 
@@ -643,18 +649,8 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     starting = {p["id"] for p in lineup.values() if p}
     bench = sorted((p for p in roster if p["id"] not in starting), key=lambda p: -p["proj"])
     total = sum(p["proj"] for p in lineup.values() if p)
-    header = ["Slot", "Player", "Team", "Opp", "Kickoff (CT)", "Proj", "Status"]
     pickups_part = pickups_html(pickups, pickup_summary) if pickups is not None else ""
     pickups_lines = ([""] + pickups_text(pickups, pickup_summary)) if pickups is not None else []
-
-    def table(rows):
-        return (
-            "<table style='border-collapse:collapse' border='1'><tr>"
-            + "".join(f"<th style='font-size:18px'>{h}</th>" for h in header)
-            + "</tr>"
-            + "".join(rows)
-            + "</table>"
-        )
 
     actions_html = (
         "<h3>Action needed</h3><ul>" + "".join(f"<li><b>{html.escape(a)}</b></li>" for a in actions) + "</ul>"
@@ -662,12 +658,12 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
         else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>"
     )
     body = (
-        f"<html><body style='font-family:sans-serif;font-size:18px'><p>{html.escape(team_name(team))}</p>{actions_html}"
+        f"<html><body style='font-family:sans-serif;font-size:22px'><p>{html.escape(team_name(team))}</p>{actions_html}"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + f"<h3>Lineup (projected {total:.1f})</h3>"
-        + table(row(label, p, reasons, True) for label, p in lineup.items())
+        + "".join(row(label, p, reasons, True) for label, p in lineup.items())
         + "<h3>Bench</h3>"
-        + table(row("BE", p, reasons, True) for p in bench)
+        + "".join(row("BE", p, reasons, True) for p in bench)
         + pickups_part
         + "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
         + "</body></html>"
@@ -739,7 +735,7 @@ def waiver_run(season, week, team, slots, test):
         log.info("week %s waivers: nothing worth claiming, no email", week)
         return {"status": "no pickups", "week": week, "run": "waivers"}
     body = (
-        f"<html><body style='font-family:sans-serif;font-size:18px'><p>{html.escape(team_name(team))}</p>"
+        f"<html><body style='font-family:sans-serif;font-size:22px'><p>{html.escape(team_name(team))}</p>"
         + pickups_html(pickups, summary)
         + f"<p style='color:#555'>{html.escape(note)}</p></body></html>"
     )
@@ -885,13 +881,13 @@ def recap_rows(facts):
 
 def recap_email(team, week, facts):
     lines, rows = recap_summary(team, week, facts), recap_rows(facts)
-    cell = "<td style='padding:4px 8px;font-size:18px'>{}</td>"
+    cell = "<td style='padding:4px 8px;font-size:22px'>{}</td>"
     body = (
-        "<html><body style='font-family:sans-serif;font-size:18px'>"
+        "<html><body style='font-family:sans-serif;font-size:22px'>"
         + "".join(f"<p>{html.escape(ln)}</p>" for ln in lines)
         + "<table style='border-collapse:collapse' border='1'>"
         + "<tr>"
-        + "".join(f"<th style='font-size:18px'>{h}</th>" for h in ("Slot", "Player", "Actual", "Projected"))
+        + "".join(f"<th style='font-size:22px'>{h}</th>" for h in ("Slot", "Player", "Actual", "Projected"))
         + "</tr>"
         + "".join("<tr>" + "".join(cell.format(html.escape(c)) for c in row) + "</tr>" for row in rows)
         + "</table></body></html>"
