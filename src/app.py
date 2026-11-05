@@ -626,6 +626,17 @@ def deliver(subject, html_body, text):
     )
 
 
+def html_block(title, detail, reason):
+    """One player or pick as a short block, not a table row: table columns leave no room for a readable font on a phone."""
+    return (
+        "<div style='border-top:1px solid #777;padding:10px 0'>"
+        f"<div style='font-size:17px'>{title}</div>"
+        + (f"<div>{html.escape(detail)}</div>" if detail else "")
+        + (f"<div style='line-height:1.4;margin-top:4px'>{html.escape(reason)}</div>" if reason else "")
+        + "</div>"
+    )
+
+
 def send_email(subject, picks, games, notes, summary, record=""):
     by_id = {g["id"]: g for g in games}
     rows, text_rows = [], []
@@ -635,10 +646,7 @@ def send_email(subject, picks, games, notes, summary, record=""):
         e = html.escape
         when = f"{g['kickoff_ct']:%a %I:%M %p}"
         rows.append(
-            f"<tr><td style='padding:4px 8px;text-align:right'><b>{p.confidence}</b></td>"
-            f"<td style='padding:4px 8px'><b>{e(p.winner)}</b></td>"
-            f"<td style='padding:4px 8px'>{e(matchup)}</td><td style='padding:4px 8px'>{when}</td>"
-            f"<td style='padding:4px 8px'>{e(g['line'])}</td><td style='padding:4px 8px'>{e(p.reasoning)}</td></tr>"
+            html_block(f"<b>{p.confidence} pts &nbsp;{e(p.winner)}</b> ({e(matchup)})", f"{when} · {g['line']}", p.reasoning)
         )
         text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
 
@@ -646,10 +654,8 @@ def send_email(subject, picks, games, notes, summary, record=""):
     summary_html = f"<p>{html.escape(summary)}</p>" if summary else ""
     record_html = f"<p><b>{html.escape(record)}</b></p>" if record else ""
     body = (
-        f"<html><body style='font-family:sans-serif'>{record_html}{summary_html}"
-        "<table style='border-collapse:collapse' border='1'>"
-        "<tr><th>Pts</th><th>Pick</th><th>Game</th><th>Kickoff (CT)</th><th>Line</th><th>Why</th></tr>"
-        f"{''.join(rows)}</table>{notes_html}</body></html>"
+        f"<html><body style='font-family:sans-serif;font-size:16px'>{record_html}{summary_html}"
+        f"{''.join(rows)}{notes_html}</body></html>"
     )
     text = "\n".join(([record, ""] if record else []) + ([summary, ""] if summary else []) + text_rows + [""] + notes)
 
