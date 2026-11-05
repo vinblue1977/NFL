@@ -583,7 +583,14 @@ def row(label, p, reasons, as_html):
             why(p, reasons),
         ]
     if as_html:
-        return "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
+        # "Why" goes on its own full-width line: as a last column, mail clients squeeze it to a sliver.
+        main = "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells[:-1]) + "</tr>"
+        if not cells[-1]:
+            return main
+        return main + (
+            f"<tr><td colspan='{len(cells) - 1}' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
+            f"{html.escape(str(cells[-1]))}</td></tr>"
+        )
     return f"{cells[0]:<6} {cells[1]:<24} {cells[3]:<8} {cells[5]:>5}  {cells[6]:<12} {cells[7]}"
 
 
@@ -604,9 +611,12 @@ def pickups_html(pickups, summary):
         return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (
             f"<p>{html.escape(summary)}</p>" if summary else ""
         )
-    header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g", "Why"]
+    header = ["Add", "Pos", "Proj/g", "Drop", "Proj/g"]
     rows = "".join(
-        "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in pickup_cells(*m)) + "</tr>"
+        "<tr>"
+        + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in pickup_cells(*m)[:-1])
+        + f"</tr><tr><td colspan='5' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
+        f"{html.escape(str(pickup_cells(*m)[-1]))}</td></tr>"
         for m in pickups
     )
     return (
@@ -635,7 +645,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     starting = {p["id"] for p in lineup.values() if p}
     bench = sorted((p for p in roster if p["id"] not in starting), key=lambda p: -p["proj"])
     total = sum(p["proj"] for p in lineup.values() if p)
-    header = ["Slot", "Player", "Team", "Opp", "Kickoff (CT)", "Proj", "Status", "Why"]
+    header = ["Slot", "Player", "Team", "Opp", "Kickoff (CT)", "Proj", "Status"]
     pickups_part = pickups_html(pickups, pickup_summary) if pickups is not None else ""
     pickups_lines = ([""] + pickups_text(pickups, pickup_summary)) if pickups is not None else []
 
