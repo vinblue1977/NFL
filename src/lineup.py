@@ -569,11 +569,11 @@ def why(p, reasons):
 
 def html_row(cells, reason):
     # The reason gets its own full-width line: as a last column, phone mail clients squeeze it to a sliver.
-    main = "<tr>" + "".join(f"<td style='padding:4px 8px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
+    main = "<tr>" + "".join(f"<td style='padding:4px 8px;font-size:18px'>{html.escape(str(c))}</td>" for c in cells) + "</tr>"
     if not reason:
         return main
     return (
-        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 10px 8px;font-size:16px;line-height:1.4'>"
+        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 10px 8px;font-size:21px;line-height:1.4'>"
         f"{html.escape(str(reason))}</td></tr>"
     )
 
@@ -621,7 +621,7 @@ def pickups_html(pickups, summary):
         "<h3>Free-agent pickups</h3>"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + "<table style='border-collapse:collapse' border='1'><tr>"
-        + "".join(f"<th>{h}</th>" for h in header)
+        + "".join(f"<th style='font-size:18px'>{h}</th>" for h in header)
         + "</tr>"
         + rows
         + "</table>"
@@ -650,7 +650,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     def table(rows):
         return (
             "<table style='border-collapse:collapse' border='1'><tr>"
-            + "".join(f"<th>{h}</th>" for h in header)
+            + "".join(f"<th style='font-size:18px'>{h}</th>" for h in header)
             + "</tr>"
             + "".join(rows)
             + "</table>"
@@ -662,7 +662,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
         else "<h3>No changes needed</h3><p>Your current ESPN lineup is the one to play.</p>"
     )
     body = (
-        f"<html><body style='font-family:sans-serif'><p>{html.escape(team_name(team))}</p>{actions_html}"
+        f"<html><body style='font-family:sans-serif;font-size:18px'><p>{html.escape(team_name(team))}</p>{actions_html}"
         + (f"<p>{html.escape(summary)}</p>" if summary else "")
         + f"<h3>Lineup (projected {total:.1f})</h3>"
         + table(row(label, p, reasons, True) for label, p in lineup.items())
@@ -739,7 +739,7 @@ def waiver_run(season, week, team, slots, test):
         log.info("week %s waivers: nothing worth claiming, no email", week)
         return {"status": "no pickups", "week": week, "run": "waivers"}
     body = (
-        f"<html><body style='font-family:sans-serif'><p>{html.escape(team_name(team))}</p>"
+        f"<html><body style='font-family:sans-serif;font-size:18px'><p>{html.escape(team_name(team))}</p>"
         + pickups_html(pickups, summary)
         + f"<p style='color:#555'>{html.escape(note)}</p></body></html>"
     )
@@ -885,12 +885,14 @@ def recap_rows(facts):
 
 def recap_email(team, week, facts):
     lines, rows = recap_summary(team, week, facts), recap_rows(facts)
-    cell = "<td style='padding:4px 8px'>{}</td>"
+    cell = "<td style='padding:4px 8px;font-size:18px'>{}</td>"
     body = (
-        "<html><body style='font-family:sans-serif'>"
+        "<html><body style='font-family:sans-serif;font-size:18px'>"
         + "".join(f"<p>{html.escape(ln)}</p>" for ln in lines)
         + "<table style='border-collapse:collapse' border='1'>"
-        + "<tr><th>Slot</th><th>Player</th><th>Actual</th><th>Projected</th></tr>"
+        + "<tr>"
+        + "".join(f"<th style='font-size:18px'>{h}</th>" for h in ("Slot", "Player", "Actual", "Projected"))
+        + "</tr>"
         + "".join("<tr>" + "".join(cell.format(html.escape(c)) for c in row) + "</tr>" for row in rows)
         + "</table></body></html>"
     )
