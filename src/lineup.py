@@ -573,7 +573,7 @@ def html_row(cells, reason):
     if not reason:
         return main
     return (
-        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 8px 8px;font-size:90%;opacity:.85'>"
+        main + f"<tr><td colspan='{len(cells)}' style='padding:0 8px 10px 8px;font-size:16px;line-height:1.4'>"
         f"{html.escape(str(reason))}</td></tr>"
     )
 
