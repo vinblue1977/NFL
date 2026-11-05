@@ -43,6 +43,7 @@ from app import (
     fetch,
     final_winners,
     heartbeat,
+    html_block,
     injuries_by_team,
     load_param,
     log,
@@ -565,17 +566,6 @@ def why(p, reasons):
     if p["status"] in SIT_STATUSES:
         return p["status"].replace("_", " ").title()
     return ""
-
-
-def html_block(title, detail, reason):
-    """One player as a short block, not a table row: seven columns leave no room for a readable font on a phone."""
-    return (
-        "<div style='border-top:1px solid #777;padding:10px 0'>"
-        f"<div style='font-size:17px'>{title}</div>"
-        + (f"<div>{html.escape(detail)}</div>" if detail else "")
-        + (f"<div style='line-height:1.4;margin-top:4px'>{html.escape(reason)}</div>" if reason else "")
-        + "</div>"
-    )
 
 
 def row(label, p, reasons, as_html):
