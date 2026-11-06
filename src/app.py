@@ -637,6 +637,23 @@ def html_block(title, detail, reason):
     )
 
 
+def summary_bullets(summary):
+    """The model's summary as clean bullet lines (one per line; a lone paragraph is split into sentences)."""
+    parts = [re.sub(r"^[-*•]\s+", "", x.strip()) for x in (summary or "").splitlines() if x.strip()]  # model may add bullets
+    if len(parts) < 2:  # shortcut: model sent one paragraph; split after a 3+ char word, so "vs." and "T.J." survive
+        parts = re.split(r"(?<=[a-z0-9%)]{3}[.!?])\s+(?=[A-Z])", parts[0] if parts else "")
+    return [x for x in parts if x]
+
+
+def bullets_text(summary):
+    return ["- " + x for x in summary_bullets(summary)]
+
+
+def bullets_html(lines):
+    items = "".join(f"<li style='margin-bottom:8px'>{html.escape(x)}</li>" for x in lines)
+    return f"<ul style='margin:0 0 16px;padding-left:20px'>{items}</ul>" if lines else ""
+
+
 def send_email(subject, picks, games, notes, summary, record=""):
     by_id = {g["id"]: g for g in games}
     rows, text_rows = [], []
@@ -651,18 +668,14 @@ def send_email(subject, picks, games, notes, summary, record=""):
         text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
 
     notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
-    parts = [x.strip() for x in summary.splitlines() if x.strip()]
-    if len(parts) < 2:  # shortcut: model sent one paragraph; bullet per sentence (splits after "vs.")
-        parts = re.split(r"(?<=[.!?])\s+", summary.strip())
-    lines = [y for y in (re.sub(r"^[-*•]\s+", "", x) for x in parts) if y]  # model may add bullets anyway
-    items = "".join(f"<li style='margin-bottom:8px'>{html.escape(x)}</li>" for x in lines)
-    summary_html = f"<ul style='margin:0 0 16px;padding-left:20px'>{items}</ul>" if lines else ""
+    lines = summary_bullets(summary)
+    summary_html = bullets_html(lines)
     record_html = f"<p><b>{html.escape(record)}</b></p>" if record else ""
     body = (
         f"<html><body style='font-family:sans-serif;font-size:16px'>{record_html}{summary_html}"
         f"{''.join(rows)}{notes_html}</body></html>"
     )
-    head = ([record, ""] if record else []) + (["- " + x for x in lines] + [""] if lines else [])
+    head = ([record, ""] if record else []) + (bullets_text(summary) + [""] if lines else [])
     text = "\n".join(head + text_rows + [""] + notes)
 
     deliver(subject, body, text)
