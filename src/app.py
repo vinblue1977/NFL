@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 from botocore.config import Config
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -432,7 +432,7 @@ class Pick(BaseModel):
 
 class PickSheet(BaseModel):
     picks: list[Pick]
-    summary: str
+    summary: str = Field(description="3-5 short bullets, one per line, no bullet characters (approach, then each tier).")
 
 
 def spread_picks(games, values):
@@ -651,13 +651,17 @@ def send_email(subject, picks, games, notes, summary, record=""):
         text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
 
     notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
-    summary_html = f"<p>{html.escape(summary)}</p>" if summary else ""
+    stripped = (x.strip(" -*•\t") for x in summary.splitlines())  # model may add bullets anyway
+    lines = [x for x in stripped if x]
+    items = "".join(f"<li style='margin-bottom:8px'>{html.escape(x)}</li>" for x in lines)
+    summary_html = f"<ul style='margin:0 0 16px;padding-left:20px'>{items}</ul>" if lines else ""
     record_html = f"<p><b>{html.escape(record)}</b></p>" if record else ""
     body = (
         f"<html><body style='font-family:sans-serif;font-size:16px'>{record_html}{summary_html}"
         f"{''.join(rows)}{notes_html}</body></html>"
     )
-    text = "\n".join(([record, ""] if record else []) + ([summary, ""] if summary else []) + text_rows + [""] + notes)
+    head = ([record, ""] if record else []) + (["- " + x for x in lines] + [""] if lines else [])
+    text = "\n".join(head + text_rows + [""] + notes)
 
     deliver(subject, body, text)
 
