@@ -144,12 +144,13 @@ class TestPickemEmail:
             app.Pick(game_id="g1", winner="KC", confidence=1, reasoning="low <b>"),
             app.Pick(game_id="g1", winner="LV", confidence=9, reasoning="high & mighty"),
         ]
-        app.send_email("Subj", picks, [g], ["a note"], "the <summary>")
+        app.send_email("Subj", picks, [g], ["a note"], "- the <summary>\n\n• second line")
         subject, body, text = sent[0]
         assert subject == "Subj"
         assert body.index("high &amp; mighty") < body.index("low &lt;b&gt;")  # most confident first
-        assert "the &lt;summary&gt;" in body and "a note" in body
-        assert text.splitlines()[0] == "the <summary>"
+        assert "<li style='margin-bottom:8px'>the &lt;summary&gt;</li>" in body and "second line</li>" in body
+        assert "a note" in body
+        assert text.splitlines()[0] == "- the <summary>" and "- second line" in text
         assert "  9  LV" in text
 
     def test_deliver_sends_one_multipart_message(self, monkeypatch):
