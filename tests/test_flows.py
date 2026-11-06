@@ -153,6 +153,23 @@ class TestPickemEmail:
         assert text.splitlines()[0] == "- the <summary>" and "- second line" in text
         assert "  9  LV" in text
 
+    def test_one_paragraph_summary_splits_into_sentences_and_keeps_minus(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(app, "deliver", lambda *a: sent.append(a))
+        g = pgame("g1", "KC", "LV", 0)
+        picks = [app.Pick(game_id="g1", winner="KC", confidence=1, reasoning="r")]
+        app.send_email("S", picks, [g], [], "First one. Second one!")
+        assert sent[0][1].count("<li ") == 2
+        sent.clear()
+        app.send_email("S", picks, [g], [], "Lean KC -7 here -")
+        assert "Lean KC -7 here -</li>" in sent[0][1]
+        sent.clear()
+        app.send_email("S", picks, [g], [], "-7 spread\n**Tier** locks\n")
+        assert "<li style='margin-bottom:8px'>-7 spread</li>" in sent[0][1] and ">**Tier** locks</li>" in sent[0][1]
+        sent.clear()
+        app.send_email("S", picks, [g], [], "")
+        assert "<ul" not in sent[0][1]
+
     def test_deliver_sends_one_multipart_message(self, monkeypatch):
         calls = []
         monkeypatch.setattr(app.ses, "send_email", lambda **kw: calls.append(kw))

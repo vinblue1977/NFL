@@ -651,8 +651,10 @@ def send_email(subject, picks, games, notes, summary, record=""):
         text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
 
     notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
-    stripped = (x.strip(" -*•\t") for x in summary.splitlines())  # model may add bullets anyway
-    lines = [x for x in stripped if x]
+    parts = [x.strip() for x in summary.splitlines() if x.strip()]
+    if len(parts) < 2:  # shortcut: model sent one paragraph; bullet per sentence (splits after "vs.")
+        parts = re.split(r"(?<=[.!?])\s+", summary.strip())
+    lines = [y for y in (re.sub(r"^[-*•]\s+", "", x) for x in parts) if y]  # model may add bullets anyway
     items = "".join(f"<li style='margin-bottom:8px'>{html.escape(x)}</li>" for x in lines)
     summary_html = f"<ul style='margin:0 0 16px;padding-left:20px'>{items}</ul>" if lines else ""
     record_html = f"<p><b>{html.escape(record)}</b></p>" if record else ""
