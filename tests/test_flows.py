@@ -325,6 +325,17 @@ class TestLineupEmail:
         assert "Lineup (projected 35.0)" in body and "Out" in body
         assert text.startswith("Rockers\n\nACTION NEEDED:") and "BENCH:" in text
 
+    def test_summaries_are_bullets_in_html_and_text(self, monkeypatch):
+        add = {"name": "A", "pos": "WR", "team": "KC", "ros_avg": 9.0, "availability": "WAIVERS"}
+        pickups = [(add, {"name": "D", "ros_avg": 3.0}, "because")]
+        _, body, text = self.build(monkeypatch, [], pickups=pickups, summary="one\n- two")
+        assert body.count("<li style='margin-bottom:8px'>") == 2
+        assert "\n- one\n- two" in text
+        got = app.summary_bullets("Start T.J. Hockenson vs. DAL, 8 pts. Bench Kelce.")
+        assert got == ["Start T.J. Hockenson vs. DAL, 8 pts.", "Bench Kelce."] and app.summary_bullets(None) == []
+        _, body, _ = self.build(monkeypatch, [], pickups=[], summary="")
+        assert "<ul" not in body
+
     def test_no_actions_says_no_changes(self, monkeypatch):
         _, body, text = self.build(monkeypatch, [])
         assert "No changes needed" in body and "No changes needed." in text

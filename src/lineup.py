@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import cache
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import (
     ALERT_PREFIX,
@@ -38,6 +38,8 @@ from app import (
     MODEL_ID,
     REGULAR_SEASON,
     UA,
+    bullets_html,
+    bullets_text,
     claude_tool_call,
     deliver,
     fetch,
@@ -52,6 +54,7 @@ from app import (
     recent_news,
     save_param,
     ssm,
+    summary_bullets,
 )
 
 FANTASY = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons"
@@ -261,7 +264,7 @@ class Reason(BaseModel):
 class LineupSheet(BaseModel):
     lineup: list[SlotPick]
     reasons: list[Reason]
-    summary: str
+    summary: str = Field(description="2-4 short bullets, one per line, no bullet characters.")
 
 
 def describe(p):
@@ -303,7 +306,7 @@ def ai_lineup(roster, slots, proposed, calls):
         claude_tool_call(
             "\n".join(lines),
             "submit_lineup",
-            "Submit the final lineup (slot label -> player id), reasons, and a short summary.",
+            "Submit the final lineup (slot label -> player id), reasons, and a short bulleted summary.",
             LineupSheet.model_json_schema(),
         )
     )
@@ -447,7 +450,7 @@ class Pickup(BaseModel):
 
 class PickupSheet(BaseModel):
     pickups: list[Pickup]
-    summary: str
+    summary: str = Field(description="2-4 short bullets, one per line, no bullet characters.")
 
 
 def describe_outlook(p):
@@ -485,7 +488,7 @@ def ai_pickups(pool, mine, droppable, slots, week):
             "\n".join(lines),
             "submit_pickups",
             "Submit the pickups (add and drop player ids with their exact names as listed, a short "
-            "reason citing the news) and a one-paragraph summary.",
+            "reason citing the news) and a short bulleted summary.",
             PickupSheet.model_json_schema(),
         )
     )
@@ -606,9 +609,7 @@ def pickup_cells(add, drop, reason):
 
 def pickups_html(pickups, summary):
     if not pickups:
-        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + (
-            f"<p>{html.escape(summary)}</p>" if summary else ""
-        )
+        return "<h3>Free-agent pickups</h3><p>No pickups worth making this week.</p>" + bullets_html(summary_bullets(summary))
     blocks = "".join(
         html_block(
             f"<b>Add {html.escape(add)}</b> ({html.escape(pos)})",
@@ -619,7 +620,7 @@ def pickups_html(pickups, summary):
     )
     return (
         "<h3>Free-agent pickups</h3>"
-        + (f"<p>{html.escape(summary)}</p>" if summary else "")
+        + bullets_html(summary_bullets(summary))
         + blocks
         + "<p style='color:#555'>Proj/g = ESPN rest-of-season points per game.</p>"
     )
@@ -627,8 +628,8 @@ def pickups_html(pickups, summary):
 
 def pickups_text(pickups, summary):
     if not pickups:
-        return ["FREE-AGENT PICKUPS: none worth making this week."] + ([summary] if summary else [])
-    lines = ["FREE-AGENT PICKUPS (rest-of-season points per game):"] + ([summary] if summary else [])
+        return ["FREE-AGENT PICKUPS: none worth making this week."] + bullets_text(summary)
+    lines = ["FREE-AGENT PICKUPS (rest-of-season points per game):"] + bullets_text(summary)
     for m in pickups:
         add, pos, add_avg, drop, drop_avg, reason = pickup_cells(*m)
         lines.append(f"  - Add {add} ({pos}, {add_avg}), drop {drop} ({drop_avg}): {reason}")
@@ -649,7 +650,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     )
     body = (
         f"<html><body style='font-family:sans-serif;font-size:16px'><p>{html.escape(team_name(team))}</p>{actions_html}"
-        + (f"<p>{html.escape(summary)}</p>" if summary else "")
+        + bullets_html(summary_bullets(summary))
         + f"<h3>Lineup (projected {total:.1f})</h3>"
         + "".join(row(label, p, reasons, True) for label, p in lineup.items())
         + "<h3>Bench</h3>"
@@ -661,7 +662,7 @@ def send_email(subject, team, roster, lineup, actions, notes, summary, reasons, 
     text = "\n".join(
         [team_name(team), ""]
         + (["ACTION NEEDED:"] + [f"  - {a}" for a in actions] if actions else ["No changes needed."])
-        + ([""] + [summary] if summary else [])
+        + ([""] + bullets_text(summary) if summary_bullets(summary) else [])
         + ["", f"LINEUP (projected {total:.1f}):"]
         + [row(label, p, reasons, False) for label, p in lineup.items()]
         + ["", "BENCH:"]
