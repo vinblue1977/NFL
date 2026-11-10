@@ -1,0 +1,23 @@
+name: Dependabot auto-merge
+
+# Enables auto-merge on every Dependabot PR. GitHub then merges it once the required checks (python, workflow-lint,
+# conventional-title) pass, and the merge to main deploys. Plain pull_request (not pull_request_target, which zizmor rejects):
+# on a Dependabot PR the token is read-only unless the permissions below ask for more, and they do.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
