@@ -1,10 +1,10 @@
 name: Dependabot auto-merge
 
 # Enables auto-merge on every Dependabot PR. GitHub then merges it once the required checks (python, workflow-lint,
-# conventional-title) pass, and the merge to main deploys. pull_request_target is needed because Dependabot's pull_request
-# token is read-only; it's safe here because this job never checks out or runs the PR's code.
+# conventional-title) pass, and the merge to main deploys. Plain pull_request (not pull_request_target, which zizmor rejects):
+# on a Dependabot PR the token is read-only unless the permissions below ask for more, and they do.
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize]
 
 permissions:
@@ -13,8 +13,7 @@ permissions:
 
 jobs:
   auto-merge:
-    # Both checks: the author is Dependabot, and Dependabot (not a human pushing to its branch) triggered this event.
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
