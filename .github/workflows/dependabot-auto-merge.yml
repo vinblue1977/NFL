@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   auto-merge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # Both checks: the author is Dependabot, and Dependabot (not a human pushing to its branch) triggered this event.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
