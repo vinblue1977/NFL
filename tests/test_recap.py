@@ -353,8 +353,9 @@ class TestScorecard:
             "9": {"scored": 70.0, "projected": 90.0, "best": 75.0, "projection_only": 70.0, "final": 70.0, "changed": 0},
         }
         t = lineup.season_totals(weeks)
-        assert (t["weeks"], t["scored"], t["projected"], t["best"]) == (4, 310.0, 320.0, 370.0)
+        assert (t["weeks"], t["scored"], t["best"]) == (4, 310.0, 370.0)
         assert (t["claude_delta"], t["claude_weeks"], t["claude_helped"], t["claude_hurt"]) == (0.0, 2, 1, 1)
+        assert t["projected"] is None  # week 8 has no projection, so the sum would not be like for like
 
     def test_summary_lines(self):
         facts = {
@@ -418,3 +419,17 @@ class TestScorecard:
         monkeypatch.setattr(lineup, "load_param", lambda name, d: 1 / 0 if "scorecard" in name else real(name, d))
         assert lineup.recap_run(2026, sb, test=False)["status"] == "sent" and sent
         assert "Claude changed" not in sent[0][2]
+
+    def test_old_snapshots_are_pruned_to_stay_under_the_ssm_limit(self, fake_ssm):
+        fake_ssm.values["/nfl-pickem/scorecard/2026"] = json.dumps({"lineups": {"3": {}, "7": {}, "8": {}}})
+        lineup.record_lineups(2026, 9, {}, {})
+        assert sorted(json.loads(fake_ssm.values["/nfl-pickem/scorecard/2026"])["lineups"]) == ["8", "9"]
+
+    def test_a_retried_recap_keeps_the_comparison_from_the_first_try(self, recap_env):
+        sb, sent, ssm = recap_env
+        lineup.recap_run(2026, sb, test=False)
+        card = json.loads(ssm.values["/nfl-pickem/scorecard/2026"])  # snapshot is gone now, as on a retry
+        lineup.recap_run(2026, sb, test=True)
+        lineup.recap_run(2026, sb, test=False)
+        assert json.loads(ssm.values["/nfl-pickem/scorecard/2026"])["weeks"]["7"] == card["weeks"]["7"]
+        assert card["weeks"]["7"]["final"] == 73

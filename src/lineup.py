@@ -497,7 +497,7 @@ def ai_pickups(pool, mine, droppable, slots, week):
         )
     )
     adds, drops = {p["id"]: p for p in pool}, {p["id"]: p for p in droppable}
-    picks = []
+    picks, skipped = [], 0
     for m in sheet.pickups:
         if m.add_player_id not in adds:
             problem = f"player {m.add_player_id} isn't an available candidate"
@@ -512,11 +512,15 @@ def ai_pickups(pool, mine, droppable, slots, week):
             problem = None
         if problem:  # skip just this move: one bad id shouldn't throw away the valid ones
             log.warning("skipping an AI pickup: %s", problem)
+            skipped += 1
             continue
         picks.append(m)
         if len(picks) == MAX_PICKUPS:
             break
-    return [(adds[m.add_player_id], drops[m.drop_player_id], m.reason) for m in picks], sheet.summary
+    summary = sheet.summary
+    if skipped:
+        summary += "\nOne suggested move couldn't be used and was left out; the bullets above may still mention it."
+    return [(adds[m.add_player_id], drops[m.drop_player_id], m.reason) for m in picks], summary
 
 
 def suggest_pickups(season, week, team, games, slots):
@@ -864,7 +868,8 @@ def record_lineups(season, week, proj_lineup, final_lineup):
     try:
         name = f"{SCORECARD_PARAM}/{season}"
         card = load_param(name, {})
-        card.setdefault("lineups", {})[str(week)] = {
+        card["lineups"] = {k: v for k, v in card.get("lineups", {}).items() if int(k) >= week - 1}  # keep the 4 KB limit
+        card["lineups"][str(week)] = {
             "projection": sorted(p["id"] for p in proj_lineup.values() if p),
             "final": sorted(p["id"] for p in final_lineup.values() if p),
         }
@@ -896,7 +901,7 @@ def season_totals(weeks):
     return {
         "weeks": len(entries),
         "scored": sum(w["scored"] for w in entries),
-        "projected": sum(w["projected"] for w in entries if w.get("projected")),
+        "projected": sum(w["projected"] for w in entries) if all(w.get("projected") for w in entries) else None,
         "best": sum(w["best"] for w in entries),
         "claude_delta": sum(w["final"] - w["projection_only"] for w in compared),
         "claude_weeks": len(changed),
@@ -939,13 +944,14 @@ def scorecard_lines(facts):
                 f"{cmp['projection_only']:.1f} for the projection-only lineup ({delta:+.1f})."
             )
     if season and season["weeks"] > 1:
+        projected = f", {season['projected']:.1f} projected by ESPN" if season["projected"] else ""
         out.append(
-            f"Season ({season['weeks']} weeks): {season['scored']:.1f} scored, {season['projected']:.1f} projected by ESPN, "
-            f"{season['best']:.1f} best possible."
+            f"Season ({season['weeks']} weeks): {season['scored']:.1f} scored{projected}, {season['best']:.1f} best possible."
         )
         if season["claude_weeks"]:
             out.append(
-                f"Claude's changes net {season['claude_delta']:+.1f} points over {season['claude_weeks']} week(s) with "
+                f"Claude's changes to the lineups emailed net {season['claude_delta']:+.1f} points over "
+                f"{season['claude_weeks']} week(s) with "
                 f"changes: helped {season['claude_helped']}, hurt {season['claude_hurt']}."
             )
     return out
@@ -1012,7 +1018,9 @@ def recap_run(season, sb, test):
         card = load_param(f"{SCORECARD_PARAM}/{season}", {})
         facts["lineups"] = lineup_comparison(roster, card.get("lineups", {}).get(str(week)))
         entry = {"scored": facts["scored"], "projected": facts["projected"], "best": facts["best"]}
-        weeks = {**card.get("weeks", {}), str(week): {**entry, **(facts["lineups"] or {})}}
+        earlier = card.get("weeks", {}).get(str(week), {})
+        kept = {k: earlier[k] for k in ("projection_only", "final", "changed") if k in earlier}  # a retry has no snapshot left
+        weeks = {**card.get("weeks", {}), str(week): {**entry, **(facts["lineups"] or kept)}}
         facts["season"] = season_totals(weeks)
     except Exception:  # the scorecard is extra: the recap still goes out without it
         log.exception("couldn't build the scorecard")

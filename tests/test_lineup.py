@@ -298,6 +298,12 @@ class TestAiPickupsValidation:
         moves, _ = self.run(monkeypatch, [self.pick(drop_player_id=99, drop_player_name="On IR"), self.pick()])
         assert [m[2] for m in moves] == ["r"] and moves[0][1]["id"] == 2
 
+    def test_a_skipped_move_is_flagged_in_the_summary(self, monkeypatch):
+        _, summary = self.run(monkeypatch, [self.pick(drop_player_id=99, drop_player_name="On IR")])
+        assert "left out" in summary
+        _, summary = self.run(monkeypatch, [self.pick()])
+        assert summary == "s"
+
     def test_skips_a_player_added_or_dropped_twice(self, monkeypatch):
         moves, _ = self.run(monkeypatch, [self.pick(), self.pick(reason="again")])
         assert [m[2] for m in moves] == ["r"]
