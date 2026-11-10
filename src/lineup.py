@@ -70,6 +70,7 @@ COOKIE_ALERT_PARAM = os.environ.get("COOKIE_ALERT_PARAM", "/nfl-pickem/cookie-al
 COOKIE_ALERT_GAP = timedelta(hours=20)  # one warning a day, not one per run
 FUNCTION = "nfl-fantasy-lineup"
 RECAP_PARAM = os.environ.get("RECAP_PARAM", "/nfl-pickem/recap")
+SCORECARD_PARAM = os.environ.get("SCORECARD_PARAM", "/nfl-pickem/scorecard")
 RUNS = {"thursday", "saturday", "sunday", "alert", "waivers", "recap"}
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
@@ -460,6 +461,7 @@ def describe_outlook(p):
         f"{p['status'].lower()} | this week {p['week']:.1f} | season avg {p['avg']:.1f} | "
         f"rest of season {p['ros']:.0f} ({p['ros_avg']:.1f}/g) | {p['owned']:.0f}% rostered in ESPN leagues"
         + (f" | {where}" if where else "")
+        + (" | ON MY IR SLOT (out, takes no roster spot, can't be dropped)" if p.get("ir") else "")
     )
     return "\n".join([line] + [f"    news {n['when']} {n['headline']} {n['story']}" for n in p["news"]])
 
@@ -473,6 +475,8 @@ def ai_pickups(pool, mine, droppable, slots, week):
         "injuries to the player or to teammates ahead of them, depth chart and snap share, "
         "suspensions, and anything the projection may not reflect yet. Weigh rest-of-season value "
         "over one good week, but cover my bye-week and injury holes for this week too.",
+        "If an injury leaves a hole in my lineup (a starter who is out for weeks, or on bye), fill it first. "
+        "Players marked ON MY IR SLOT are already handled: never suggest dropping them.",
         "Only suggest a move that clearly improves my team; an empty list is a fine answer. Don't "
         "drop a player just because they're on bye or had one bad week. Mention when a player is on "
         "waivers (needs a claim) rather than a free agent.",
@@ -493,18 +497,30 @@ def ai_pickups(pool, mine, droppable, slots, week):
         )
     )
     adds, drops = {p["id"]: p for p in pool}, {p["id"]: p for p in droppable}
-    picks = sheet.pickups[:MAX_PICKUPS]
-    for m in picks:
+    picks, skipped = [], 0
+    for m in sheet.pickups:
         if m.add_player_id not in adds:
-            raise ValueError(f"player {m.add_player_id} isn't an available candidate")
-        if m.drop_player_id not in drops:
-            raise ValueError(f"player {m.drop_player_id} isn't on my droppable list")
-        # Catches an id that doesn't match the player the reason talks about.
-        if adds[m.add_player_id]["name"] != m.add_player_name or drops[m.drop_player_id]["name"] != m.drop_player_name:
-            raise ValueError(f"ids don't match names ({m.add_player_name} / {m.drop_player_name})")
-    if len({m.add_player_id for m in picks}) != len(picks) or len({m.drop_player_id for m in picks}) != len(picks):
-        raise ValueError("a player is added or dropped twice")
-    return [(adds[m.add_player_id], drops[m.drop_player_id], m.reason) for m in picks], sheet.summary
+            problem = f"player {m.add_player_id} isn't an available candidate"
+        elif m.drop_player_id not in drops:
+            problem = f"player {m.drop_player_id} isn't on my droppable list"
+        elif adds[m.add_player_id]["name"] != m.add_player_name or drops[m.drop_player_id]["name"] != m.drop_player_name:
+            # Catches an id that doesn't match the player the reason talks about.
+            problem = f"ids don't match names ({m.add_player_name} / {m.drop_player_name})"
+        elif any(m.add_player_id == k.add_player_id or m.drop_player_id == k.drop_player_id for k in picks):
+            problem = "a player is added or dropped twice"
+        else:
+            problem = None
+        if problem:  # skip just this move: one bad id shouldn't throw away the valid ones
+            log.warning("skipping an AI pickup: %s", problem)
+            skipped += 1
+            continue
+        picks.append(m)
+        if len(picks) == MAX_PICKUPS:
+            break
+    summary = sheet.summary
+    if skipped:
+        summary += "\nOne suggested move couldn't be used and was left out; the bullets above may still mention it."
+    return [(adds[m.add_player_id], drops[m.drop_player_id], m.reason) for m in picks], summary
 
 
 def suggest_pickups(season, week, team, games, slots):
@@ -514,7 +530,9 @@ def suggest_pickups(season, week, team, games, slots):
     entries = team["roster"]["entries"]
     mine = [outlook(e["playerPoolEntry"]["player"], season, week, teams, started) for e in entries]
     # IR slots don't count against the roster, and players whose game started can't be dropped.
-    droppable = [p for p, e in zip(mine, entries, strict=True) if e["lineupSlotId"] != IR and not p["locked"]]
+    for p, e in zip(mine, entries, strict=True):
+        p["ir"] = e["lineupSlotId"] == IR
+    droppable = [p for p in mine if not p["ir"] and not p["locked"]]
 
     available = [outlook(x["player"], season, week, teams, started, x.get("status", "")) for x in fetch_free_agents(season, week)]
     pool = []
@@ -842,6 +860,56 @@ def recap_facts(roster, slots, result):
     }
 
 
+def record_lineups(season, week, proj_lineup, final_lineup):
+    """Remember the projection-only lineup and the one emailed (after Claude's review), to compare them in the recap.
+
+    The latest Thursday/Saturday/Sunday run wins. Never raises: the lineup email has already gone out.
+    """
+    try:
+        name = f"{SCORECARD_PARAM}/{season}"
+        card = load_param(name, {})
+        card["lineups"] = {k: v for k, v in card.get("lineups", {}).items() if int(k) >= week - 1}  # keep the 4 KB limit
+        card["lineups"][str(week)] = {
+            "projection": sorted(p["id"] for p in proj_lineup.values() if p),
+            "final": sorted(p["id"] for p in final_lineup.values() if p),
+        }
+        save_param(name, card)
+    except Exception:
+        log.exception("couldn't record the lineups for the scorecard")
+
+
+def lineup_comparison(roster, snapshot):
+    """Actual points of the projection-only lineup vs the emailed one, or None if there's nothing to compare."""
+    if not snapshot:
+        return None
+    actual = {p["id"]: p["actual"] for p in roster}
+    ids = snapshot["projection"] + snapshot["final"]
+    if any(i not in actual for i in ids):  # someone was dropped since: can't judge the week
+        return None
+    return {
+        "projection_only": sum(actual[i] for i in snapshot["projection"]),
+        "final": sum(actual[i] for i in snapshot["final"]),
+        "changed": len(set(snapshot["final"]) - set(snapshot["projection"])),
+    }
+
+
+def season_totals(weeks):
+    """Season-to-date sums from the per-week entries (week number -> numbers)."""
+    entries = list(weeks.values())
+    compared = [w for w in entries if w.get("projection_only") is not None]
+    changed = [w for w in compared if w["changed"]]
+    return {
+        "weeks": len(entries),
+        "scored": sum(w["scored"] for w in entries),
+        "projected": sum(w["projected"] for w in entries) if all(w.get("projected") for w in entries) else None,
+        "best": sum(w["best"] for w in entries),
+        "claude_delta": sum(w["final"] - w["projection_only"] for w in compared),
+        "claude_weeks": len(changed),
+        "claude_helped": sum(1 for w in changed if w["final"] > w["projection_only"]),
+        "claude_hurt": sum(1 for w in changed if w["final"] < w["projection_only"]),
+    }
+
+
 def recap_summary(team, week, facts):
     """The recap's sentences, one per line; the first line is the heading."""
     gap = facts["best"] - facts["scored"]
@@ -854,13 +922,39 @@ def recap_summary(team, week, facts):
     lines.append(f"Your starters scored {facts['scored']:.1f}{projected}.")
     if gap < 0.05:
         lines.append("That was the best lineup you could have fielded.")
-        return lines
-    lines.append(f"The best lineup in hindsight scored {facts['best']:.1f}: {gap:.1f} points were left on the bench.")
-    if facts["bench_misses"]:
-        lines.append("Should have started: " + ", ".join(f"{p['name']} ({p['actual']:.1f})" for p in facts["bench_misses"]))
-    if facts["bad_starts"]:
-        lines.append("Started instead: " + ", ".join(f"{p['name']} ({p['actual']:.1f})" for p in facts["bad_starts"]))
-    return lines
+    else:
+        lines.append(f"The best lineup in hindsight scored {facts['best']:.1f}: {gap:.1f} points were left on the bench.")
+        if facts["bench_misses"]:
+            lines.append("Should have started: " + ", ".join(f"{p['name']} ({p['actual']:.1f})" for p in facts["bench_misses"]))
+        if facts["bad_starts"]:
+            lines.append("Started instead: " + ", ".join(f"{p['name']} ({p['actual']:.1f})" for p in facts["bad_starts"]))
+    return lines + scorecard_lines(facts)
+
+
+def scorecard_lines(facts):
+    """Did Claude's review beat plain ESPN projections this week, and over the season?"""
+    out, cmp, season = [], facts.get("lineups"), facts.get("season")
+    if cmp:
+        if not cmp["changed"]:
+            out.append("Claude made no changes to the ESPN-projection lineup.")
+        else:
+            delta = cmp["final"] - cmp["projection_only"]
+            out.append(
+                f"Claude changed {cmp['changed']} starter(s) from the projection lineup: {cmp['final']:.1f} vs "
+                f"{cmp['projection_only']:.1f} for the projection-only lineup ({delta:+.1f})."
+            )
+    if season and season["weeks"] > 1:
+        projected = f", {season['projected']:.1f} projected by ESPN" if season["projected"] else ""
+        out.append(
+            f"Season ({season['weeks']} weeks): {season['scored']:.1f} scored{projected}, {season['best']:.1f} best possible."
+        )
+        if season["claude_weeks"]:
+            out.append(
+                f"Claude's changes to the lineups emailed net {season['claude_delta']:+.1f} points over "
+                f"{season['claude_weeks']} week(s) with "
+                f"changes: helped {season['claude_helped']}, hurt {season['claude_hurt']}."
+            )
+    return out
 
 
 def recap_rows(facts):
@@ -919,6 +1013,18 @@ def recap_run(season, sb, test):
     slots = lineup_slots(league)
     roster = players(team, games, week)
     facts = recap_facts(roster, slots, matchup_result(league, team, week))
+    card = {}
+    try:
+        card = load_param(f"{SCORECARD_PARAM}/{season}", {})
+        facts["lineups"] = lineup_comparison(roster, card.get("lineups", {}).get(str(week)))
+        entry = {"scored": facts["scored"], "projected": facts["projected"], "best": facts["best"]}
+        earlier = card.get("weeks", {}).get(str(week), {})
+        kept = {k: earlier[k] for k in ("projection_only", "final", "changed") if k in earlier}  # a retry has no snapshot left
+        weeks = {**card.get("weeks", {}), str(week): {**entry, **(facts["lineups"] or kept)}}
+        facts["season"] = season_totals(weeks)
+    except Exception:  # the scorecard is extra: the recap still goes out without it
+        log.exception("couldn't build the scorecard")
+        weeks = None
     body, text = recap_email(team, week, facts)
     deliver(f"{'[TEST] ' if test else ''}Fantasy Week {week} Recap", body, text)
     if not test:
@@ -926,6 +1032,15 @@ def recap_run(season, sb, test):
             save_param(f"{RECAP_PARAM}/{season}", sorted({*sent_weeks, week}))
         except Exception:  # the email went out; a missed save only risks a second recap
             log.exception("couldn't record the recap")
+        if weeks is not None:
+            try:
+                card["weeks"] = {
+                    k: {n: (round(v, 1) if isinstance(v, float) else v) for n, v in w.items()} for k, w in weeks.items()
+                }
+                card.get("lineups", {}).pop(str(week), None)
+                save_param(f"{SCORECARD_PARAM}/{season}", card)
+            except Exception:
+                log.exception("couldn't save the scorecard")
     log.info("sent the week %s recap: %.1f scored, %.1f best", week, facts["scored"], facts["best"])
     return {"status": "sent", "week": week, "run": "recap", "scored": facts["scored"], "best": facts["best"]}
 
@@ -1005,7 +1120,7 @@ def run_lineup(event):
     if run == "waivers":
         return waiver_run(season, week, team, slots, test)
     roster = players(team, games, week)
-    lineup = best_lineup(roster, slots)
+    lineup = proj_lineup = best_lineup(roster, slots)  # proj_lineup stays the projection-only one; Claude may replace lineup
     notes, reasons, summary = [], {}, ""
 
     if run == "alert" and not test and not moves(roster, lineup, run, now_ct):
@@ -1057,6 +1172,8 @@ def run_lineup(event):
     send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary)
     if run == "alert" and not test:  # after the send: a failed email must not hide the alert from the retry
         remember_alert(season, week, actions)
+    elif run != "alert" and not test:
+        record_lineups(season, week, proj_lineup, lineup)
     log.info("sent lineup for week %s (%s): %d moves", week, run, len(actions))
     return {
         "status": "sent",

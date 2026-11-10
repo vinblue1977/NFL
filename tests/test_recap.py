@@ -1,5 +1,7 @@
 """Tuesday recap: actual points vs projections, the best lineup in hindsight, and the matchup result."""
 
+import json
+
 import pytest
 from test_lineup import SLOTS, player
 
@@ -328,3 +330,106 @@ class TestMatchupVerdict:
         league = {"settings": {"scheduleSettings": {"matchupPeriods": {"15": [16], "16": [16]}}}, "teams": []}
         league["schedule"] = [{**scored, "matchupPeriodId": 15, "winner": "UNDECIDED"}, scored]
         assert lineup.matchup_result(league, {"id": 1}, 16) == (5.0, "your opponent", 3.0)
+
+
+class TestScorecard:
+    """Did Claude's review beat the plain ESPN-projection lineup? Compared by what everyone actually scored."""
+
+    # roster(): actuals are P1 12, P2 18, P3 4, P4 10, P5 26 (bench), P6 7
+    SNAPSHOT = {"projection": [1, 2, 3, 4, 6], "final": [1, 2, 4, 5, 6]}  # Claude swapped P3 for P5
+
+    def test_compares_the_two_lineups_by_actual_points(self):
+        assert lineup.lineup_comparison(roster(), self.SNAPSHOT) == {"projection_only": 51, "final": 73, "changed": 1}
+
+    def test_no_snapshot_or_a_dropped_player_means_no_comparison(self):
+        assert lineup.lineup_comparison(roster(), None) is None
+        assert lineup.lineup_comparison(roster(), {"projection": [1, 99], "final": [1, 2]}) is None
+
+    def test_season_totals(self):
+        weeks = {
+            "6": {"scored": 100.0, "projected": 120.0, "best": 130.0, "projection_only": 90.0, "final": 100.0, "changed": 2},
+            "7": {"scored": 80.0, "projected": 110.0, "best": 95.0, "projection_only": 80.0, "final": 70.0, "changed": 1},
+            "8": {"scored": 60.0, "projected": None, "best": 70.0},  # no comparison, no projection
+            "9": {"scored": 70.0, "projected": 90.0, "best": 75.0, "projection_only": 70.0, "final": 70.0, "changed": 0},
+        }
+        t = lineup.season_totals(weeks)
+        assert (t["weeks"], t["scored"], t["best"]) == (4, 310.0, 370.0)
+        assert (t["claude_delta"], t["claude_weeks"], t["claude_helped"], t["claude_hurt"]) == (0.0, 2, 1, 1)
+        assert t["projected"] is None  # week 8 has no projection, so the sum would not be like for like
+
+    def test_summary_lines(self):
+        facts = {
+            "lineups": {"projection_only": 51.0, "final": 73.0, "changed": 1},
+            "season": {
+                "weeks": 3, "scored": 250.0, "projected": 300.0, "best": 330.0,
+                "claude_delta": 12.0, "claude_weeks": 2, "claude_helped": 2, "claude_hurt": 0,
+            },
+        }  # fmt: skip
+        text = "\n".join(lineup.scorecard_lines(facts))
+        assert "Claude changed 1 starter(s)" in text and "73.0 vs 51.0" in text and "(+22.0)" in text
+        assert "Season (3 weeks): 250.0 scored, 300.0 projected by ESPN, 330.0 best possible." in text
+        assert "net +12.0 points over 2 week(s) with changes: helped 2, hurt 0" in text
+
+    def test_no_changes_and_a_first_week_season(self):
+        facts = {"lineups": {"projection_only": 5.0, "final": 5.0, "changed": 0}, "season": {"weeks": 1}}
+        assert lineup.scorecard_lines(facts) == ["Claude made no changes to the ESPN-projection lineup."]
+        assert lineup.scorecard_lines({}) == []
+
+    def test_record_lineups_saves_ids_and_never_raises(self, fake_ssm, monkeypatch):
+        r = roster()
+        lineup.record_lineups(2026, 7, {"QB": r[0], "RB1": r[2], "K": None}, {"QB": r[0], "RB1": r[4], "K": None})
+        card = json.loads(fake_ssm.values["/nfl-pickem/scorecard/2026"])
+        assert card["lineups"]["7"] == {"projection": [1, 3], "final": [1, 5]}
+        monkeypatch.setattr(lineup, "load_param", lambda *a: 1 / 0)
+        lineup.record_lineups(2026, 8, {}, {})  # a broken SSM must not fail the run
+
+    @pytest.fixture
+    def recap_env(self, monkeypatch, fake_ssm):
+        sent = []
+        sb = {"season": {"type": 2, "year": 2026}, "week": {"number": 7}}
+        monkeypatch.setattr(lineup, "parse_games", lambda s: [{"id": "g", "started": True}])
+        monkeypatch.setattr(lineup, "final_winners", lambda s: {"g": "KC"})
+        monkeypatch.setattr(lineup, "fetch_league", lambda *a, **k: ({"teams": [], "schedule": []}, "swid"))
+        monkeypatch.setattr(lineup, "my_team", lambda *a: {"id": 1, "name": "T"})
+        monkeypatch.setattr(lineup, "lineup_slots", lambda league: SLOTS)
+        monkeypatch.setattr(lineup, "players", lambda *a: roster())
+        monkeypatch.setattr(lineup, "deliver", lambda *a: sent.append(a))
+        earlier = {"scored": 100.0, "projected": 120.0, "best": 130.0, "projection_only": 90.0, "final": 100.0, "changed": 2}
+        fake_ssm.values["/nfl-pickem/scorecard/2026"] = json.dumps({"weeks": {"6": earlier}, "lineups": {"7": self.SNAPSHOT}})
+        return sb, sent, fake_ssm
+
+    def test_recap_reports_and_stores_the_comparison(self, recap_env):
+        sb, sent, ssm = recap_env
+        assert lineup.recap_run(2026, sb, test=False)["status"] == "sent"
+        text = sent[0][2]
+        assert "Claude changed 1 starter(s)" in text and "73.0 vs 51.0" in text and "Season (2 weeks)" in text
+        card = json.loads(ssm.values["/nfl-pickem/scorecard/2026"])
+        assert sorted(card["weeks"]) == ["6", "7"] and "7" not in card["lineups"]
+        assert card["weeks"]["7"]["final"] == 73 and card["weeks"]["7"]["scored"] == 51
+
+    def test_a_test_recap_does_not_change_the_scorecard(self, recap_env):
+        sb, sent, ssm = recap_env
+        before = ssm.values["/nfl-pickem/scorecard/2026"]
+        lineup.recap_run(2026, sb, test=True)
+        assert ssm.values["/nfl-pickem/scorecard/2026"] == before and "Claude changed 1" in sent[0][2]
+
+    def test_the_recap_still_goes_out_if_the_scorecard_breaks(self, recap_env, monkeypatch):
+        sb, sent, ssm = recap_env
+        real = lineup.load_param
+        monkeypatch.setattr(lineup, "load_param", lambda name, d: 1 / 0 if "scorecard" in name else real(name, d))
+        assert lineup.recap_run(2026, sb, test=False)["status"] == "sent" and sent
+        assert "Claude changed" not in sent[0][2]
+
+    def test_old_snapshots_are_pruned_to_stay_under_the_ssm_limit(self, fake_ssm):
+        fake_ssm.values["/nfl-pickem/scorecard/2026"] = json.dumps({"lineups": {"3": {}, "7": {}, "8": {}}})
+        lineup.record_lineups(2026, 9, {}, {})
+        assert sorted(json.loads(fake_ssm.values["/nfl-pickem/scorecard/2026"])["lineups"]) == ["8", "9"]
+
+    def test_a_retried_recap_keeps_the_comparison_from_the_first_try(self, recap_env):
+        sb, sent, ssm = recap_env
+        lineup.recap_run(2026, sb, test=False)
+        card = json.loads(ssm.values["/nfl-pickem/scorecard/2026"])  # snapshot is gone now, as on a retry
+        lineup.recap_run(2026, sb, test=True)
+        lineup.recap_run(2026, sb, test=False)
+        assert json.loads(ssm.values["/nfl-pickem/scorecard/2026"])["weeks"]["7"] == card["weeks"]["7"]
+        assert card["weeks"]["7"]["final"] == 73

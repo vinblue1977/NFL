@@ -23,7 +23,7 @@ All times Central. Every schedule is a template parameter, so `./deploy.sh Thurs
 | Sat 09:00 | lineup `saturday` | Full preview after Friday's injury reports |
 | Sun 10:45 | lineup `sunday` | Final lineup after the noon inactives |
 | Thu 18:00, Sun 06:15 / 14:00 / 18:00, Mon 17:30 | lineup `alert` | Only if a game kicks off within 2 hours and a start/bench change is needed that no earlier alert already reported |
-| Tue 07:30 (retry Wed 07:30) | lineup `recap` | How last week went: points vs ESPN's projections, best lineup in hindsight, matchup result. Waits until every game is final; sent once per week |
+| Tue 07:30 (retry Wed 07:30) | lineup `recap` | How last week went: points vs ESPN's projections, best lineup in hindsight, matchup result, plus a season scorecard: whether Claude's changes to the ESPN-projection lineup won or lost points. Waits until every game is final; sent once per week |
 | Tue 08:00 | lineup `waivers` | Free-agent pickups ahead of the Wednesday waiver run, only if there are any |
 | Thu, Sun 10:00 | watchdog | Checks the pick'em heartbeat |
 | Tue, Thu, Sat, Sun 12:30 | watchdog | Checks the lineup heartbeat |
@@ -68,11 +68,12 @@ Everything the Lambdas keep lives in Systems Manager Parameter Store (`/nfl-pick
 | `/nfl-pickem/results/<season>` | String | pick'em runs | The scored weeks (correct, points, AI vs odds) |
 | `/nfl-pickem/alerts/<season>-w<week>` | String | lineup alert runs | Digests of the moves already alerted this week |
 | `/nfl-pickem/recap/<season>` | String | lineup recap run | Weeks already recapped |
+| `/nfl-pickem/scorecard/<season>` | String | lineup runs, recap run | Per-week lineup snapshots (projection-only vs emailed) and the season scorecard numbers |
 | `/nfl-pickem/heartbeat/<function>` | String | pick'em and lineup runs | When a run last finished (the watchdog reads it) |
 | `/nfl-pickem/cookie-alert` | String | lineup runs | When the "ESPN cookies expired" email last went out |
 
 The per-week records (`locked`, `picks`, `alerts`) older than last week are deleted by the Thursday pick'em run.
-Results, recap, heartbeat and cookie parameters are kept.
+Results, recap, scorecard, heartbeat and cookie parameters are kept.
 
 One-time setup:
 

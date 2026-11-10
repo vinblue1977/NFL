@@ -289,9 +289,32 @@ class TestAiPickupsValidation:
         assert moves[0][2] == "r" and summary == "s"
 
     @pytest.mark.parametrize("bad", [{"add_player_id": 9}, {"drop_player_id": 9}, {"add_player_name": "Someone Else"}])
-    def test_rejects_unknown_ids_and_mismatched_names(self, monkeypatch, bad):
-        with pytest.raises(ValueError):
-            self.run(monkeypatch, [self.pick(**bad)])
+    def test_skips_unknown_ids_and_mismatched_names(self, monkeypatch, bad):
+        moves, _ = self.run(monkeypatch, [self.pick(**bad)])
+        assert moves == []
+
+    def test_one_bad_move_does_not_discard_the_valid_ones(self, monkeypatch):
+        """Claude tried to drop an IR player (not droppable); the other move must still go out."""
+        moves, _ = self.run(monkeypatch, [self.pick(drop_player_id=99, drop_player_name="On IR"), self.pick()])
+        assert [m[2] for m in moves] == ["r"] and moves[0][1]["id"] == 2
+
+    def test_a_skipped_move_is_flagged_in_the_summary(self, monkeypatch):
+        _, summary = self.run(monkeypatch, [self.pick(drop_player_id=99, drop_player_name="On IR")])
+        assert "left out" in summary
+        _, summary = self.run(monkeypatch, [self.pick()])
+        assert summary == "s"
+
+    def test_skips_a_player_added_or_dropped_twice(self, monkeypatch):
+        moves, _ = self.run(monkeypatch, [self.pick(), self.pick(reason="again")])
+        assert [m[2] for m in moves] == ["r"]
+
+    def test_ir_players_are_marked_in_the_prompt(self):
+        base = {
+            "id": 5, "name": "Hurt Back", "pos": "RB", "team": "GB", "bye": 5, "status": "OUT", "week": 0.0, "avg": 9.0,
+            "ros": 40.0, "ros_avg": 5.0, "owned": 90.0, "availability": "", "news": [], "ir": True,
+        }  # fmt: skip
+        assert "ON MY IR SLOT" in lineup.describe_outlook(base)
+        assert "ON MY IR SLOT" not in lineup.describe_outlook({**base, "ir": False})
 
 
 class TestAlertGate:
