@@ -251,6 +251,56 @@ class TestClaudeToolCall:
             run()
 
 
+class TestDirectApi:
+    """With a key in SSM the direct Anthropic API answers; any failure falls back to Bedrock."""
+
+    def setup(self, monkeypatch, fake_ssm, direct, key="sk-test"):
+        import anthropic
+
+        bedrock = FakeClient([SimpleNamespace(type="tool_use", name="submit", input={"via": "bedrock"})])
+        seen = {}
+
+        def make_direct(**kw):
+            seen["api_key"] = kw["api_key"]
+            return direct
+
+        monkeypatch.setattr(anthropic, "Anthropic", make_direct)
+        monkeypatch.setattr(anthropic, "AnthropicBedrock", lambda **kw: bedrock)
+        if key:
+            fake_ssm.values[app.ANTHROPIC_KEY_PARAM] = key
+        return bedrock, seen
+
+    def run(self):
+        return app.claude_tool_call("prompt", "submit", "desc", {"type": "object"})
+
+    def test_key_in_ssm_uses_the_direct_api_and_its_model(self, monkeypatch, fake_ssm):
+        direct = FakeClient([SimpleNamespace(type="tool_use", name="submit", input={"via": "direct"})])
+        bedrock, seen = self.setup(monkeypatch, fake_ssm, direct)
+        assert self.run() == {"via": "direct"}
+        assert seen["api_key"] == "sk-test"
+        assert direct.kwargs["model"] == app.ANTHROPIC_MODEL and bedrock.kwargs is None
+        assert app.ai_label == f"{app.ANTHROPIC_MODEL} on the Anthropic API"
+
+    def test_no_key_uses_bedrock(self, monkeypatch, fake_ssm):
+        bedrock, _ = self.setup(monkeypatch, fake_ssm, None, key=None)
+        assert self.run() == {"via": "bedrock"}
+        assert bedrock.kwargs["model"] == app.MODEL_ID
+        assert app.ai_label == f"{app.MODEL_ID} on Amazon Bedrock"
+
+    def test_direct_failure_falls_back_to_bedrock(self, monkeypatch, fake_ssm):
+        class Broken:
+            messages = SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(RuntimeError("credit balance too low")))
+
+        bedrock, _ = self.setup(monkeypatch, fake_ssm, Broken())
+        assert self.run() == {"via": "bedrock"}
+        assert app.ai_label == f"{app.MODEL_ID} on Amazon Bedrock (Anthropic API failed: RuntimeError)"
+
+    def test_a_refusal_from_the_direct_api_also_falls_back(self, monkeypatch, fake_ssm):
+        direct = FakeClient([], stop_reason="refusal")
+        self.setup(monkeypatch, fake_ssm, direct)
+        assert self.run() == {"via": "bedrock"}
+
+
 class TestConverseToolCall:
     def run(self, monkeypatch, response):
         import boto3

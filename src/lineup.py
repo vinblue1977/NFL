@@ -32,10 +32,10 @@ from functools import cache
 
 from pydantic import BaseModel, Field
 
+import app
 from app import (
     ALERT_PREFIX,
     CENTRAL,
-    MODEL_ID,
     REGULAR_SEASON,
     UA,
     bullets_html,
@@ -547,7 +547,7 @@ def suggest_pickups(season, week, team, games, slots):
     if USE_AI:
         try:
             moves, summary = ai_pickups(pool, mine, droppable, slots, week)
-            return moves, summary, f"Pickups chosen by {MODEL_ID} from ESPN projections and player news."
+            return moves, summary, f"Pickups chosen by {app.ai_label} from ESPN projections and player news."
         except Exception as exc:  # fall back to projections
             log.exception("AI pickups failed")
             note = f"AI pickup review failed ({type(exc).__name__}: {exc}); pickups from projections."
@@ -1137,7 +1137,7 @@ def run_lineup(event):
     else:
         try:
             lineup, reasons, summary = ai_lineup(roster, slots, lineup, calls)
-            notes.append(f"Close calls reviewed by {MODEL_ID} on Amazon Bedrock.")
+            notes.append(f"Close calls reviewed by {app.ai_label}.")
         except Exception as exc:  # any AI failure still gets an email
             log.exception("AI lineup failed")
             notes.append(f"AI review failed ({type(exc).__name__}: {exc}); lineup from ESPN projections.")

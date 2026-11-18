@@ -27,6 +27,11 @@ Parameters:
       - us.amazon.nova-pro-v1:0
     Default: us.anthropic.claude-sonnet-4-6
     Description: Bedrock inference profile. Claude uses the Anthropic SDK (needs a model agreement); Nova uses the Converse API.
+  AnthropicModel:
+    Type: String
+    AllowedValues: [claude-sonnet-5-5, claude-opus-5-5]
+    Default: claude-sonnet-5-5
+    Description: Model for the direct Anthropic API, used when SSM /nfl-pickem/anthropic-api-key exists. ModelId (Bedrock) is the fallback.
   Effort:
     Type: String
     AllowedValues: [low, medium, high]
@@ -173,6 +178,7 @@ Resources:
           SENDER_EMAIL: !Ref SenderEmail
           USE_AI: !Ref UseAI
           MODEL_ID: !Ref ModelId
+          ANTHROPIC_MODEL: !Ref AnthropicModel
           EFFORT: !Ref Effort
           STATE_PARAM_PREFIX: /nfl-pickem/locked
           ODDS_API_KEY_PARAM: /nfl-pickem/odds-api-key
@@ -208,6 +214,7 @@ Resources:
           RECIPIENT_EMAIL: !Ref RecipientEmail
           SENDER_EMAIL: !Ref SenderEmail
           MODEL_ID: !Ref ModelId
+          ANTHROPIC_MODEL: !Ref AnthropicModel
           EFFORT: !Ref Effort
           LEAGUE_ID: !Ref LeagueId
           TEAM_ID: !Ref TeamId

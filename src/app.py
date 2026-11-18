@@ -43,6 +43,9 @@ SENDER = os.environ["SENDER_EMAIL"]
 USE_AI = os.environ.get("USE_AI", "true").lower() == "true"
 MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 EFFORT = os.environ.get("EFFORT", "medium")
+# Direct Anthropic API: used when this SSM SecureString exists; Bedrock (MODEL_ID) is the fallback.
+ANTHROPIC_KEY_PARAM = os.environ.get("ANTHROPIC_API_KEY_PARAM", "/nfl-pickem/anthropic-api-key")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 STATE_PREFIX = os.environ.get("STATE_PARAM_PREFIX", "/nfl-pickem/locked")
 PICKS_PREFIX = os.environ.get("PICKS_PARAM_PREFIX", "/nfl-pickem/picks")
 ALERT_PREFIX = os.environ.get("ALERT_STATE_PARAM_PREFIX", "/nfl-pickem/alerts")
@@ -489,27 +492,63 @@ def build_prompt(games, values, injuries, transactions, news, locked_note):
     return "\n".join(lines)
 
 
-def claude_tool_call(prompt, tool_name, description, schema):
-    """Ask Claude on Bedrock to answer by calling one tool; returns the tool input.
+ai_label = ""  # which backend answered last, for the email notes
 
-    Bedrock doesn't support structured outputs, so the answer comes back as the
-    input of a tool call and the caller validates it.
+
+def anthropic_api_key():
+    try:
+        return ssm.get_parameter(Name=ANTHROPIC_KEY_PARAM, WithDecryption=True)["Parameter"]["Value"]
+    except ssm.exceptions.ParameterNotFound:
+        return None
+
+
+def claude_tool_call(prompt, tool_name, description, schema):
+    """Ask Claude to answer by calling one tool; returns the tool input.
+
+    Tries the direct Anthropic API first when a key is stored, and falls back to
+    Bedrock on any failure (no credits, rate limit, outage, expired key).
     """
+    global ai_label
     if not is_claude(MODEL_ID):
+        ai_label = f"{MODEL_ID} on Amazon Bedrock"
         return converse_tool_call(prompt, tool_name, description, schema)
+
+    failed = ""
+    try:
+        key = anthropic_api_key()
+        if key:
+            from anthropic import Anthropic
+
+            # Bounded so a slow API leaves the Lambda time to fall back (600s timeout).
+            client = Anthropic(api_key=key, timeout=150, max_retries=1)
+            result = tool_call_via(client, ANTHROPIC_MODEL, prompt, tool_name, description, schema)
+            ai_label = f"{ANTHROPIC_MODEL} on the Anthropic API"
+            return result
+    except Exception as exc:
+        log.exception("Anthropic API call failed; falling back to Bedrock")
+        failed = f" (Anthropic API failed: {type(exc).__name__})"  # surfaces an expired key or empty balance
 
     from anthropic import AnthropicBedrock
 
-    client = AnthropicBedrock(aws_region=REGION)
+    result = tool_call_via(AnthropicBedrock(aws_region=REGION), MODEL_ID, prompt, tool_name, description, schema)
+    ai_label = f"{MODEL_ID} on Amazon Bedrock{failed}"
+    return result
+
+
+def tool_call_via(client, model, prompt, tool_name, description, schema):
+    """One Messages call that must end in a call to `tool_name`; the caller validates the input.
+
+    Bedrock doesn't support structured outputs, so the answer is the input of a tool call.
+    """
     response = client.messages.create(
-        model=MODEL_ID,
+        model=model,
         max_tokens=16000,
         thinking={"type": "adaptive"},
         output_config={"effort": EFFORT},
         tools=[{"name": tool_name, "description": description, "input_schema": schema}],
         messages=[{"role": "user", "content": f"{prompt}\n\nSubmit your answer by calling {tool_name}."}],
     )
-    log.info("usage: %s", response.usage)
+    log.info("usage (%s): %s", model, response.usage)
     if response.stop_reason == "refusal":
         raise RuntimeError("model declined the request")
     call = next((b for b in response.content if b.type == "tool_use" and b.name == tool_name), None)
@@ -808,7 +847,7 @@ def run_pickem(event):
         try:
             picks, summary = ai_picks(pool, available, locked_note)
             ai_used = True
-            notes.append(f"Picks by {MODEL_ID} on Amazon Bedrock.")
+            notes.append(f"Picks by {ai_label}.")
         except Exception as exc:  # any AI failure still gets an email
             log.exception("AI picks failed")
             picks = spread_picks(pool, available)
