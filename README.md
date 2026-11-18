@@ -35,7 +35,7 @@ Schedule, injuries, transactions and news come from ESPN's public API. Win proba
 doesn't price fall back to [The Odds API](https://the-odds-api.com) consensus (no-vig moneyline averaged across
 US sportsbooks) if a key is set, then to ESPN's line. The email notes any fallback.
 
-With `UseAI=true`, Claude on Amazon Bedrock makes the picks; otherwise, or if the AI call fails, it picks the
+With `UseAI=true`, Claude makes the picks (direct Anthropic API when a key is stored, else Amazon Bedrock); otherwise, or if the AI call fails, it picks the
 likelier winner and gives more points to bigger favorites. The default is `UseAI=false`.
 
 Each email opens with last week's record ("Week 6: 11/14 correct, 87/105 points. Season ..."), scored from the
@@ -111,7 +111,7 @@ from per-call figures, not from a bill:
 - **Alerts and the watchdog:** no AI unless an alert actually needs a lineup change reviewed.
 - **Kalshi, ESPN, The Odds API (free plan):** $0.
 
-To measure it, look at Bedrock in Cost Explorer or the `usage:` lines the Lambdas log.
+To measure it, look at Bedrock in Cost Explorer, the Anthropic Console Usage page, or the `usage:` lines the Lambdas log.
 
 ## Deploy
 
@@ -125,7 +125,8 @@ A merge to `main` that changes more than `*.md` deploys itself (GitHub Actions, 
 docs-only pushes start no run. See `CLAUDE.md` for the PR workflow and the deploy-role setup.
 
 - First deploy: click the SES verification link AWS emails to the sender address. Emails can't be sent until you do.
-- AI mode uses Claude Sonnet 4.6 through bedrock-runtime (`us.anthropic.claude-sonnet-4-6`) by default, which needs its model agreement in us-east-2. `ModelId=us.anthropic.claude-opus-4-6-v1` switches to Opus 4.6. Sonnet 4.6 was picked after a one-off side-by-side on a single week's waiver pickups (same data): it and Opus 4.6 made the same move with equally specific reasons, while Nova Pro made three generic moves that dropped star players. Because CloudFormation keeps earlier parameter values, move an existing stack with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.anthropic.claude-sonnet-4-6`.
+- Direct Anthropic API (trial, started 2026-11-17): if the SSM SecureString `/nfl-pickem/anthropic-api-key` exists, Claude is called through the Anthropic API with `AnthropicModel` (default `claude-sonnet-5-5`; `claude-opus-5-5` is the other choice, at twice the price). Any failure (no credits, rate limit, expired key) falls back to Bedrock below, so the job still runs. The email notes say which backend answered and, after a fallback, why the direct call failed. It applies to Claude `ModelId`s only; Nova ignores the key. Auto-reload is off in the Console, so the balance is the cap. The key expires 2027-02-28: create a new one and `aws ssm put-parameter --overwrite` it. Delete the parameter to go back to Bedrock only. Bedrock has no quota for Sonnet 5.5 on this account (AWS declined the increase), hence the direct API.
+- AI mode falls back to Claude Sonnet 4.6 through bedrock-runtime (`us.anthropic.claude-sonnet-4-6`) by default, which needs its model agreement in us-east-2. `ModelId=us.anthropic.claude-opus-4-6-v1` switches to Opus 4.6. Sonnet 4.6 was picked after a one-off side-by-side on a single week's waiver pickups (same data): it and Opus 4.6 made the same move with equally specific reasons, while Nova Pro made three generic moves that dropped star players. Because CloudFormation keeps earlier parameter values, move an existing stack with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.anthropic.claude-sonnet-4-6`.
 - `ModelId=us.amazon.nova-pro-v1:0` switches both Lambdas to Amazon Nova Pro through the Converse API (about $0.80/$3.20 per million input/output tokens, versus much higher prices for Claude, and quality noticeably worse on the pickups). Any non-Anthropic ID takes that path. Effort and thinking are Claude-only and ignored for Nova. Set it once by hand with `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ModelId=us.amazon.nova-pro-v1:0`; CloudFormation keeps the value on later auto-deploys.
 - `aws cloudformation deploy` keeps previous parameter values, so changing a template `Default` does nothing: pass the parameter explicitly.
 - `AWS_BEARER_TOKEN_BEDROCK` in the shell makes the AWS CLI use a limited Bedrock-only IAM user. For manual deploys and admin commands, run them as `env -u AWS_BEARER_TOKEN_BEDROCK ./deploy.sh ...`.
