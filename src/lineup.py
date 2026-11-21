@@ -71,7 +71,12 @@ COOKIE_ALERT_GAP = timedelta(hours=20)  # one warning a day, not one per run
 FUNCTION = "nfl-fantasy-lineup"
 RECAP_PARAM = os.environ.get("RECAP_PARAM", "/nfl-pickem/recap")
 SCORECARD_PARAM = os.environ.get("SCORECARD_PARAM", "/nfl-pickem/scorecard")
-RUNS = {"thursday", "saturday", "sunday", "alert", "waivers", "recap"}
+RUNS = {"wednesday", "thursday", "friday", "saturday", "sunday", "alert", "waivers", "recap"}
+# Weekday (Mon=0) whose games a run settles; the email says "do this now" for those players.
+RUN_DAY = {"wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5}
+DAY_NAMES = {2: "Wednesday", 3: "Thursday", 4: "Friday", 5: "Saturday"}
+DEFAULT_RUN = {1: "waivers", 2: "wednesday", 3: "thursday", 4: "friday", 5: "saturday"}
+GAME_DAY_ONLY = ("wednesday", "friday")  # these runs exist for rare games; stay quiet when there is none that day
 
 POSITIONS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
 SLOTS = {0: "QB", 1: "TQB", 2: "RB", 3: "RB/WR", 4: "WR", 5: "WR/TE", 6: "TE", 7: "OP", 16: "D/ST", 17: "K", 23: "FLEX"}
@@ -573,10 +578,10 @@ def moves(roster, lineup, run, now=None):
         starts = p["id"] in starting
         if was == starts or p["locked"] or (run == "alert" and not kicks_soon(p["game"], now)):
             continue
-        thursday = p["game"] and p["game"]["kickoff_ct"].weekday() == 3
-        when = " (plays Thursday, do this now)" if thursday and run == "thursday" else ""
+        today = p["game"] and run in RUN_DAY and p["game"]["kickoff_ct"].weekday() == RUN_DAY[run]
+        when = f" (plays {DAY_NAMES[RUN_DAY[run]]}, do this now)" if today else ""
         out.append(f"Start {p['name']} at {starting[p['id']]}{when}" if starts else f"Bench {p['name']}{when}")
-    return sorted(out, key=lambda m: ("Thursday" not in m, not m.startswith("Start")))
+    return sorted(out, key=lambda m: ("do this now" not in m, not m.startswith("Start")))
 
 
 def why(p, reasons):
@@ -1087,10 +1092,14 @@ def handler(event, context):
     return result
 
 
+def unplayed_on(game, weekday):
+    return game["kickoff_ct"].weekday() == weekday and not game["started"]
+
+
 def run_lineup(event):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
-    run = event.get("run") or {1: "waivers", 3: "thursday", 5: "saturday"}.get(now_ct.weekday(), "sunday")
+    run = event.get("run") or DEFAULT_RUN.get(now_ct.weekday(), "sunday")
     if run not in RUNS:
         raise ValueError(f"unknown run {run!r}; expected one of {sorted(RUNS)}")
     test = bool(event.get("test"))
@@ -1104,6 +1113,9 @@ def run_lineup(event):
     if run == "recap":
         return recap_run(season, sb, test)
     games = parse_games(sb)
+    if run in GAME_DAY_ONLY and not test and not any(unplayed_on(g, RUN_DAY[run]) for g in games):
+        log.info("%s: no game today, skipping", run)
+        return {"status": "no game today", "run": run}
     if run == "alert" and not test and not any(kicks_soon(g, now_ct) for g in games):
         log.info("alert: no game kicks off in the next %d min, skipping", ALERT_WINDOW // 60)
         return {"status": "no game soon", "run": run}
@@ -1142,8 +1154,8 @@ def run_lineup(event):
             log.exception("AI lineup failed")
             notes.append(f"AI review failed ({type(exc).__name__}: {exc}); lineup from ESPN projections.")
 
-    if run == "thursday":
-        notes.append("Only Thursday-game players need a decision today; the rest is a preview.")
+    if run in RUN_DAY and any(unplayed_on(g, RUN_DAY[run]) for g in games):
+        notes.append(f"Only {DAY_NAMES[RUN_DAY[run]]}-game players need a decision today; the rest is a preview.")
     if any(not p for p in lineup.values()):
         notes.append("Some slots have no healthy eligible player; check waivers/free agents.")
     actions = moves(roster, lineup, run, now_ct)
@@ -1167,7 +1179,8 @@ def run_lineup(event):
             log.exception("pickups failed")
             notes.append(f"Free-agent pickups failed ({type(exc).__name__}: {exc}).")
 
-    label = {"thursday": "Thursday", "saturday": "Saturday preview", "sunday": "Sunday final", "alert": "Lineup alert"}[run]
+    labels = {"saturday": "Saturday preview", "sunday": "Sunday final", "alert": "Lineup alert"}
+    label = labels.get(run) or DAY_NAMES[RUN_DAY[run]]
     subject = f"{'[TEST] ' if test else ''}Fantasy Week {week} Lineup - {label}"
     send_email(subject, team, roster, lineup, actions, notes, summary, reasons, pickups, pickup_summary)
     if run == "alert" and not test:  # after the send: a failed email must not hide the alert from the retry

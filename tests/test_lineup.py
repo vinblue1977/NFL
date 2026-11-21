@@ -156,6 +156,14 @@ class TestMoves:
         assert "Start P3 at RB1" in out and "Bench P2" in out
         assert not any("P4" in m for m in out)  # locked players can't move
 
+    def test_do_this_now_follows_the_runs_own_day(self):
+        wed = datetime(2026, 11, 25, 19, tzinfo=UTC)
+        roster = [player(1, "QB", 20, slot=BENCH), player(2, "QB", 10, slot=0)]
+        roster[0]["game"]["kickoff_ct"] = wed
+        lu = {"QB": roster[0]}
+        assert lineup.moves(roster, lu, "wednesday")[0] == "Start P1 at QB (plays Wednesday, do this now)"
+        assert lineup.moves(roster, lu, "thursday")[0] == "Start P1 at QB"
+
     def test_no_changes_when_lineup_matches(self):
         roster = [player(1, "QB", 20, slot=0), player(2, "QB", 5)]
         assert lineup.moves(roster, {"QB": roster[0]}, "sunday") == []
