@@ -39,7 +39,15 @@ Parameters:
   ThursdaySchedule:
     Type: String
     Default: cron(0 8 ? * THU *)
-    Description: Central time. Thursday game only.
+    Description: Central time. Thursday and Friday games.
+  WednesdaySchedule:
+    Type: String
+    Default: cron(0 8 ? * WED *)
+    Description: Central time. Wednesday game only (Thanksgiving week); other Wednesdays do nothing.
+  SaturdaySchedule:
+    Type: String
+    Default: cron(0 8 ? * SAT *)
+    Description: Central time. Saturday games only (late-season weeks); other Saturdays do nothing.
   SundaySchedule:
     Type: String
     Default: cron(0 6 ? * SUN *)
@@ -57,6 +65,14 @@ Parameters:
     AllowedValues: ["true", "false"]
     Default: "true"
     Description: true = Claude reviews close start/sit calls; false = ESPN projections only.
+  WednesdayLineupSchedule:
+    Type: String
+    Default: cron(0 8 ? * WED *)
+    Description: Central time. Start/sit for Wednesday-game players (Thanksgiving week).
+  FridayLineupSchedule:
+    Type: String
+    Default: cron(0 8 ? * FRI *)
+    Description: Central time. Start/sit for Friday-game players (Christmas); other Fridays do nothing.
   ThursdayLineupSchedule:
     Type: String
     Default: cron(0 8 ? * THU *)
@@ -73,6 +89,30 @@ Parameters:
     Type: String
     Default: cron(0 18 ? * THU *)
     Description: Central time. Thursday night game (7:15 CT kickoff; inactives are out about 90 minutes before).
+  AlertWednesdaySchedule:
+    Type: String
+    Default: cron(45 17 ? * WED *)
+    Description: Central time. Wednesday night game (7:00 CT kickoff).
+  AlertThursdayMiddaySchedule:
+    Type: String
+    Default: cron(30 10 ? * THU,FRI *)
+    Description: Central time. Thanksgiving and Christmas noon games (a no-op when none kicks off soon).
+  AlertThursdayAfternoonSchedule:
+    Type: String
+    Default: cron(0 14 ? * THU,FRI *)
+    Description: Central time. Thanksgiving and Christmas 3:30 games (a no-op when none kicks off soon).
+  AlertSaturdayAfternoonSchedule:
+    Type: String
+    Default: cron(30 14 ? * SAT *)
+    Description: Central time. Saturday early game (4:00 CT kickoff).
+  AlertSaturdayNightSchedule:
+    Type: String
+    Default: cron(0 18 ? * SAT *)
+    Description: Central time. Saturday night game (7:20 CT kickoff).
+  AlertFridayNightSchedule:
+    Type: String
+    Default: cron(0 18 ? * FRI *)
+    Description: Central time. Friday night game (7:15 CT kickoff; a no-op when there isn't one).
   AlertSundayMorningSchedule:
     Type: String
     Default: cron(15 6 ? * SUN *)
@@ -284,6 +324,18 @@ Resources:
                   - !GetAtt LineupFunction.Arn
                   - !GetAtt WatchdogFunction.Arn
 
+  WednesdayRun:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-pickem-wednesday
+      ScheduleExpression: !Ref WednesdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt PickemFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "wednesday"}'
+
   ThursdayRun:
     Type: AWS::Scheduler::Schedule
     Properties:
@@ -296,6 +348,18 @@ Resources:
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "thursday"}'
 
+  SaturdayRun:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-pickem-saturday
+      ScheduleExpression: !Ref SaturdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt PickemFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "saturday"}'
+
   SundayRun:
     Type: AWS::Scheduler::Schedule
     Properties:
@@ -307,6 +371,30 @@ Resources:
         Arn: !GetAtt PickemFunction.Arn
         RoleArn: !GetAtt SchedulerRole.Arn
         Input: '{"run": "sunday"}'
+
+  WednesdayLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-wednesday
+      ScheduleExpression: !Ref WednesdayLineupSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "wednesday"}'
+
+  FridayLineup:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-friday
+      ScheduleExpression: !Ref FridayLineupSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "friday"}'
 
   ThursdayLineup:
     Type: AWS::Scheduler::Schedule
@@ -349,6 +437,78 @@ Resources:
     Properties:
       Name: nfl-fantasy-lineup-alert-thursday
       ScheduleExpression: !Ref AlertThursdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertWednesday:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-wednesday
+      ScheduleExpression: !Ref AlertWednesdaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertThursdayMidday:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-thursday-midday
+      ScheduleExpression: !Ref AlertThursdayMiddaySchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertThursdayAfternoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-thursday-afternoon
+      ScheduleExpression: !Ref AlertThursdayAfternoonSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertSaturdayAfternoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-saturday-afternoon
+      ScheduleExpression: !Ref AlertSaturdayAfternoonSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertSaturdayNight:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-saturday-night
+      ScheduleExpression: !Ref AlertSaturdayNightSchedule
+      ScheduleExpressionTimezone: America/Chicago
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt LineupFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"run": "alert"}'
+
+  AlertFridayNight:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nfl-fantasy-lineup-alert-friday-night
+      ScheduleExpression: !Ref AlertFridayNightSchedule
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
@@ -423,8 +583,8 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-watchdog-pickem
-      Description: Pick'em runs Thu 8:00 and Sun 6:00 CT; check at 10:00.
-      ScheduleExpression: cron(0 10 ? * THU,SUN *)
+      Description: Pick'em runs Wed 8:00, Thu 8:00, Sat 8:00 and Sun 6:00 CT; check at 10:00.
+      ScheduleExpression: cron(0 10 ? * WED,THU,SAT,SUN *)
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
@@ -436,8 +596,8 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: nfl-watchdog-lineup
-      Description: Lineup runs Tue 8:00, Thu 8:00, Sat 9:00 and Sun 10:45 CT; check at 12:30.
-      ScheduleExpression: cron(30 12 ? * TUE,THU,SAT,SUN *)
+      Description: Lineup runs Tue 8:00, Wed 8:00, Thu 8:00, Fri 8:00, Sat 9:00 and Sun 10:45 CT; check at 12:30.
+      ScheduleExpression: cron(30 12 ? * TUE,WED,THU,FRI,SAT,SUN *)
       ScheduleExpressionTimezone: America/Chicago
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:

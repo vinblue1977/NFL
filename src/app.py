@@ -1,8 +1,9 @@
 """NFL Pick'em emailer.
 
-Thursday run: picks the Thursday game(s) and locks their confidence points.
+Wednesday, Thursday and Saturday runs: pick the games on those days (Thursday also takes
+              Friday) and lock their confidence points. Most weeks only Thursday has a game.
 Sunday run:   picks every game that hasn't kicked off yet, using the points
-              left over after the Thursday lock.
+              left over after the earlier locks.
 
 Confidence points follow the usual pick'em rule: with N games in the week,
 each value 1..N is used exactly once.
@@ -26,6 +27,10 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
+
+# Weekdays (Mon=0) whose games each early run picks and locks; the Sunday run takes everything else.
+RUN_DAYS = {"wednesday": (2,), "thursday": (3, 4), "saturday": (5,)}
+DEFAULT_RUN = {2: "wednesday", 3: "thursday", 5: "saturday"}
 
 ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2/markets"
@@ -774,7 +779,7 @@ def handler(event, context):
 def run_pickem(event):
     event = event or {}
     now_ct = datetime.now(CENTRAL)
-    run = event.get("run") or ("thursday" if now_ct.weekday() == 3 else "sunday")
+    run = event.get("run") or DEFAULT_RUN.get(now_ct.weekday(), "sunday")
     test = bool(event.get("test"))
 
     sb = fetch("scoreboard")
@@ -783,7 +788,7 @@ def run_pickem(event):
         return {"status": "off season"}
     season = sb.get("season", {}).get("year", now_ct.year)
     week = sb.get("week", {}).get("number")
-    if run == "thursday" and not test:
+    if run in ("wednesday", "thursday") and not test:
         prune_state(season, week)  # weekly housekeeping first, so early exits below can't skip it
     games = parse_games(sb)
     if not games:
@@ -793,6 +798,18 @@ def run_pickem(event):
     all_values = set(range(1, len(games) + 1))
     locked = load_locked(season, week)
     notes = []
+
+    if run in RUN_DAYS:
+        # Rank the whole week so an early game gets a fair share of the points.
+        days = RUN_DAYS[run]
+        targets = [g for g in games if g["kickoff_ct"].weekday() in days and not g["started"] and g["id"] not in locked]
+        pool = [g for g in games if not g["started"] and g["id"] not in locked]
+    else:
+        targets = [g for g in games if not g["started"] and g["id"] not in locked]
+        pool = targets
+    if not targets:  # most Wednesdays and Saturdays: skip the market calls too
+        log.info("no unplayed %s games in week %s", run, week)
+        return {"status": "no target games"}
 
     # Win probabilities: Kalshi first, then The Odds API (if a key is set), else ESPN's line.
     unplayed = [g for g in games if not g["started"]]
@@ -811,23 +828,6 @@ def run_pickem(event):
     no_market = [f"{g['away']}@{g['home']}" for g in unplayed if "home_prob" not in g]
     if no_market:
         notes.append(f"No market price for {', '.join(no_market)}; used the ESPN line.")
-
-    if run == "thursday":
-        # Thursday through Saturday: late-season weeks add Friday and Saturday games that Sunday's run would find already played.
-        early = (3, 4, 5)
-        targets = [g for g in games if g["kickoff_ct"].weekday() in early and not g["started"] and g["id"] not in locked]
-        # Rank the whole week so the Thursday game gets a fair share of the points.
-        pool = [g for g in games if not g["started"] and g["id"] not in locked]
-    else:
-        targets = [g for g in games if not g["started"] and g["id"] not in locked]
-        pool = targets
-
-    if not targets:
-        log.info("no unplayed %s games in week %s", run, week)
-        return {"status": "no target games"}
-
-    if run == "thursday" and any(g["kickoff_ct"].weekday() != 3 for g in targets):
-        notes.append("Includes Friday/Saturday games; their picks lock now, since Sunday's run would find them already played.")
 
     available = all_values - {v["confidence"] for v in locked.values()}
     # Games that kicked off without a lock (picked by hand) used points we don't
@@ -859,7 +859,7 @@ def run_pickem(event):
     target_ids = {g["id"] for g in targets}
     picks = [p for p in picks if p.game_id in target_ids]
 
-    label = "Thursday" if run == "thursday" else "Sunday/Monday"
+    label = {"wednesday": "Wednesday", "thursday": "Thursday", "saturday": "Saturday"}.get(run, "Sunday/Monday")
     subject = f"{'[TEST] ' if test else ''}NFL Week {week} Pick'em - {label}"
     send_email(subject, picks, games, notes, summary, last_week_record(season, week, score=not test))
     if not test:
@@ -867,7 +867,7 @@ def run_pickem(event):
             record_picks(season, week, picks, ai_used)
         except Exception:  # the email went out; a missed record only leaves that week unscored
             log.exception("couldn't record the picks")
-    if run == "thursday" and not test:
+    if run in RUN_DAYS and not test:
         # After the send: a failed email must not leave the week locked, or the retry would send nothing.
         for p in picks:
             locked[p.game_id] = {"winner": p.winner, "confidence": p.confidence}

@@ -40,8 +40,8 @@ class TestPickemHandler:
         weekday = datetime(2026, 10, 22, 20, tzinfo=lineup.CENTRAL)  # a Thursday
         games = [
             pgame("g1", "KC", "LV", 0, fav="KC", fav_by=7),
-            pgame("g2", "BUF", "NE", 72, fav="BUF", fav_by=3),
-            pgame("g3", "SF", "LA", 73, fav="LA", fav_by=1),
+            pgame("g2", "BUF", "NE", 0, fav="BUF", fav_by=3),
+            pgame("g3", "SF", "LA", 1, fav="LA", fav_by=1),
         ]
         games[0]["kickoff_ct"] = weekday
         rec = SimpleNamespace(sent=[], saved=[], games=games, locked={})
@@ -71,13 +71,30 @@ class TestPickemHandler:
         assert env.saved == [{"g1": {"winner": "KC", "confidence": 3}}]
         assert "Thursday" in env.sent[0][0]
 
-    def test_thursday_also_picks_friday_and_saturday_games(self, env):
-        # Late-season weeks have Friday/Saturday games; Sunday's run would find them already played.
+    def test_thursday_also_picks_friday_games_but_leaves_saturday_to_its_own_run(self, env):
         env.games[1]["kickoff_ct"] = datetime(2026, 12, 25, 12, tzinfo=lineup.CENTRAL)  # a Friday
         env.games[2]["kickoff_ct"] = datetime(2026, 12, 26, 19, tzinfo=lineup.CENTRAL)  # a Saturday
         result = app.run_pickem({"run": "thursday"})
-        assert sorted(p["game_id"] for p in result["picks"]) == ["g1", "g2", "g3"]
+        assert sorted(p["game_id"] for p in result["picks"]) == ["g1", "g2"]
+        assert set(env.saved[0]) == {"g1", "g2"}
+        env.locked = env.saved[0]
+        env.saved.clear()
+        sat = app.run_pickem({"run": "saturday"})
+        assert [p["game_id"] for p in sat["picks"]] == ["g3"] and "Saturday" in env.sent[-1][0]
+        assert sat["picks"][0]["confidence"] == 1  # the points the Thursday run left over
         assert set(env.saved[0]) == {"g1", "g2", "g3"}
+
+    def test_wednesday_game_is_picked_and_locked_by_its_own_run(self, env):
+        env.games[0]["kickoff_ct"] = datetime(2026, 10, 21, 19, tzinfo=lineup.CENTRAL)  # a Wednesday
+        result = app.run_pickem({"run": "wednesday"})
+        assert [p["game_id"] for p in result["picks"]] == ["g1"]
+        assert env.saved == [{"g1": {"winner": "KC", "confidence": 3}}] and "Wednesday" in env.sent[0][0]
+
+    def test_wednesday_and_saturday_runs_do_nothing_without_a_game_that_day(self, env, monkeypatch):
+        monkeypatch.setattr(app, "add_kalshi", lambda games: pytest.fail("no market calls when there is nothing to pick"))
+        assert app.run_pickem({"run": "wednesday"}) == {"status": "no target games"}
+        assert app.run_pickem({"run": "saturday"}) == {"status": "no target games"}
+        assert not env.sent
 
     def test_thursday_test_run_does_not_lock(self, env):
         app.run_pickem({"run": "thursday", "test": True})
@@ -131,6 +148,8 @@ class TestPickemHandler:
     def test_default_run_follows_the_weekday(self, env, monkeypatch):
         monkeypatch.setattr(app, "datetime", SimpleNamespace(now=lambda tz: datetime(2026, 10, 22, 8, tzinfo=tz)))
         assert app.run_pickem({})["run"] == "thursday"
+        monkeypatch.setattr(app, "datetime", SimpleNamespace(now=lambda tz: datetime(2026, 10, 21, 8, tzinfo=tz)))
+        assert app.run_pickem({}) == {"status": "no target games"}  # Wednesday run, no Wednesday game
         monkeypatch.setattr(app, "datetime", SimpleNamespace(now=lambda tz: datetime(2026, 10, 25, 6, tzinfo=tz)))
         assert app.run_pickem({})["run"] == "sunday"
 
@@ -460,7 +479,24 @@ class TestLineupHandlerFlow:
         lineup.handler({"run": "sunday"}, None)
         assert env.sent[0][6] == "ai summary" and any("reviewed by" in n for n in env.sent[0][5])
 
+    def test_wednesday_and_friday_runs_stay_quiet_without_a_game_that_day(self, env):
+        env.roster[0]["game"]["kickoff_ct"] = datetime(2026, 10, 22, 19, tzinfo=lineup.CENTRAL)  # a Thursday
+        for run in ("wednesday", "friday"):
+            assert lineup.handler({"run": run}, None) == {"status": "no game today", "run": run}
+        assert not env.sent
+
+    def test_wednesday_game_gets_a_decision_note_and_label(self, env):
+        env.roster[0]["game"]["kickoff_ct"] = datetime(2026, 11, 25, 19, tzinfo=lineup.CENTRAL)  # a Wednesday
+        result = lineup.handler({"run": "wednesday"}, None)
+        assert result["status"] == "sent" and "Lineup - Wednesday" in env.sent[0][0]
+        assert any("Only Wednesday-game players" in n for n in env.sent[0][5])
+
+    def test_saturday_preview_has_no_decision_note_without_a_saturday_game(self, env):
+        lineup.handler({"run": "saturday"}, None)
+        assert not any("game players need a decision" in n for n in env.sent[0][5])
+
     def test_thursday_adds_the_preview_note(self, env):
+        env.roster[0]["game"]["kickoff_ct"] = datetime(2026, 10, 22, 19, tzinfo=lineup.CENTRAL)  # a Thursday
         lineup.handler({"run": "thursday"}, None)
         assert any("Only Thursday-game players" in n for n in env.sent[0][5])
 
@@ -490,7 +526,7 @@ class TestPickemRecording:
         fake = FakeSsm()
         monkeypatch.setattr(app, "ssm", fake)
         monkeypatch.setattr(app, "fetch", lambda path: {"season": {"type": 2, "year": 2026}, "week": {"number": 7}})
-        monkeypatch.setattr(app, "parse_games", lambda sb: [pgame("g2", "BUF", "NE", 72, fav="BUF", fav_by=3)])
+        monkeypatch.setattr(app, "parse_games", lambda sb: [pgame("g2", "BUF", "NE", 0, fav="BUF", fav_by=3)])
         monkeypatch.setattr(app, "add_kalshi", lambda games: 0)
         monkeypatch.setattr(app, "odds_api_key", lambda: None)
         monkeypatch.setattr(app, "send_email", lambda *a: None)

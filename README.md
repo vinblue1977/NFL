@@ -17,16 +17,20 @@ All times Central. Every schedule is a template parameter, so `./deploy.sh Thurs
 
 | When | Lambda / run | What it sends |
 | --- | --- | --- |
-| Thu 08:00 | pick'em `thursday` | The Thursday game's pick; its points are saved so Sunday uses the leftovers |
+| Wed 08:00 | pick'em `wednesday` | Only when there's a Wednesday game (Thanksgiving week); its points are saved so later runs use the leftovers |
+| Thu 08:00 | pick'em `thursday` | The Thursday and Friday games' picks; their points are saved so Sunday uses the leftovers |
+| Sat 08:00 | pick'em `saturday` | Only when there are Saturday games (late season); picked with Friday's news, points saved |
 | Sun 06:00 | pick'em `sunday` | Every game that hasn't started, with the leftover points |
+| Wed 08:00 | lineup `wednesday` | Decisions for the Wednesday game's players (Thanksgiving week), the rest is a preview |
+| Fri 08:00 | lineup `friday` | Only when there's a Friday game (Christmas): decisions for its players |
 | Thu 08:00 | lineup `thursday` | Decisions for the Thursday game's players, the rest is a preview |
-| Sat 09:00 | lineup `saturday` | Full preview after Friday's injury reports |
+| Sat 09:00 | lineup `saturday` | Decisions for Saturday-game players (late season), the rest is a preview after Friday's injury reports |
 | Sun 10:45 | lineup `sunday` | Final lineup after the noon inactives |
-| Thu 18:00, Sun 06:15 / 14:00 / 18:00, Mon 17:30 | lineup `alert` | Only if a game kicks off within 2 hours and a start/bench change is needed that no earlier alert already reported |
+| Wed 17:45, Thu 18:00, Thu and Fri 10:30 / 14:00, Fri 18:00, Sat 14:30 / 18:00, Sun 06:15 / 14:00 / 18:00, Mon 17:30 | lineup `alert` | Only if a game kicks off within 2 hours and a start/bench change is needed that no earlier alert already reported |
 | Tue 07:30 (retry Wed 07:30) | lineup `recap` | How last week went: points vs ESPN's projections, best lineup in hindsight, matchup result, plus a season scorecard: whether Claude's changes to the ESPN-projection lineup won or lost points. Waits until every game is final; sent once per week |
 | Tue 08:00 | lineup `waivers` | Free-agent pickups ahead of the Wednesday waiver run, only if there are any |
-| Thu, Sun 10:00 | watchdog | Checks the pick'em heartbeat |
-| Tue, Thu, Sat, Sun 12:30 | watchdog | Checks the lineup heartbeat |
+| Wed, Thu, Sat, Sun 10:00 | watchdog | Checks the pick'em heartbeat |
+| Tue, Wed, Thu, Fri, Sat, Sun 12:30 | watchdog | Checks the lineup heartbeat |
 
 ## Pick'em
 
@@ -63,7 +67,7 @@ Everything the Lambdas keep lives in Systems Manager Parameter Store (`/nfl-pick
 | --- | --- | --- | --- |
 | `/nfl-pickem/espn-s2`, `/nfl-pickem/espn-swid` | SecureString | **you**, once | ESPN cookies for the private league |
 | `/nfl-pickem/odds-api-key` | SecureString | **you**, optional | The Odds API key (fallback odds) |
-| `/nfl-pickem/locked/<season>-w<week>` | String | pick'em Thursday run | Thursday's picks and points, so Sunday uses the leftovers |
+| `/nfl-pickem/locked/<season>-w<week>` | String | pick'em Wed/Thu/Sat runs | Their picks and points, so later runs use the leftovers |
 | `/nfl-pickem/picks/<season>-w<week>` | String | pick'em runs | Every emailed pick, for scoring |
 | `/nfl-pickem/results/<season>` | String | pick'em runs | The scored weeks (correct, points, AI vs odds) |
 | `/nfl-pickem/alerts/<season>-w<week>` | String | lineup alert runs | Digests of the moves already alerted this week |
@@ -72,7 +76,7 @@ Everything the Lambdas keep lives in Systems Manager Parameter Store (`/nfl-pick
 | `/nfl-pickem/heartbeat/<function>` | String | pick'em and lineup runs | When a run last finished (the watchdog reads it) |
 | `/nfl-pickem/cookie-alert` | String | lineup runs | When the "ESPN cookies expired" email last went out |
 
-The per-week records (`locked`, `picks`, `alerts`) older than last week are deleted by the Thursday pick'em run.
+The per-week records (`locked`, `picks`, `alerts`) older than last week are deleted by the Wednesday and Thursday pick'em runs.
 Results, recap, scorecard, heartbeat and cookie parameters are kept.
 
 One-time setup:
