@@ -50,6 +50,12 @@ class TestParseGames:
         assert (games[0]["fav"], games[0]["fav_by"]) == ("LV", 7.0)
         assert (games[1]["fav"], games[1]["fav_by"]) == ("DAL", 3.0)
 
+    def test_short_names_with_abbreviation_fallback(self):
+        ev = event("a", "2026-10-25T17:00Z", "KC", "LV")
+        ev["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = "Chiefs"
+        g = app.parse_games({"events": [ev]})[0]
+        assert (g["home_short"], g["away_short"]) == ("Chiefs", "LV")
+
     def test_spread_quoted_from_home_side_when_no_favorite_flag(self):
         g = app.parse_games({"events": [event("a", "2026-10-25T17:00Z", "KC", "LV", spread=-2.5)]})[0]
         assert g["fav"] == "KC"
@@ -201,3 +207,24 @@ def test_notify_failure_swallows_publish_errors(monkeypatch):
     monkeypatch.setattr(app, "FAILURE_TOPIC_ARN", "arn:topic")
     monkeypatch.setattr(app.sns, "publish", lambda **kw: (_ for _ in ()).throw(OSError("sns down")))
     app.notify_failure({}, RuntimeError("x"))
+
+
+class TestEmailTeamNames:
+    def test_email_uses_team_names_not_abbreviations(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(app, "deliver", lambda *a: sent.append(a))
+        g = game("1", "BUF", "MIA", home_short="Bills", away_short="Dolphins", line="BUF -16.5")
+        g["kickoff_ct"] = datetime(2026, 11, 22, 12, tzinfo=UTC)
+        pick = app.Pick(game_id="1", winner="BUF", confidence=13, reasoning="why")
+        app.send_email("subj", [pick], [g], [], None)
+        _, html_body, text = sent[0]
+        assert "Bills</b> (Dolphins @ Bills)" in html_body and "Bills -16.5" in html_body
+        assert "Bills" in text and "BUF" not in text
+
+    def test_falls_back_to_abbreviations(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(app, "deliver", lambda *a: sent.append(a))
+        g = game("1", "BUF", "MIA", line="PK")
+        g["kickoff_ct"] = datetime(2026, 11, 22, 12, tzinfo=UTC)
+        app.send_email("subj", [app.Pick(game_id="1", winner="MIA", confidence=1, reasoning="r")], [g], [], None)
+        assert "MIA @ BUF" in sent[0][1]
