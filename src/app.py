@@ -110,6 +110,8 @@ def parse_games(scoreboard):
                 "away_id": int(away["team"]["id"]),
                 "home_name": home["team"]["displayName"],
                 "away_name": away["team"]["displayName"],
+                "home_short": home["team"].get("shortDisplayName") or home["team"]["abbreviation"],
+                "away_short": away["team"].get("shortDisplayName") or away["team"]["abbreviation"],
                 "home_record": (home.get("records") or [{}])[0].get("summary", ""),
                 "away_record": (away.get("records") or [{}])[0].get("summary", ""),
                 "line": odds.get("details", "no line"),
@@ -703,13 +705,15 @@ def send_email(subject, picks, games, notes, summary, record=""):
     rows, text_rows = [], []
     for p in sorted(picks, key=lambda p: -p.confidence):
         g = by_id[p.game_id]
-        matchup = f"{g['away']} @ {g['home']}"
+        short = {g["home"]: g.get("home_short", g["home"]), g["away"]: g.get("away_short", g["away"])}
+        winner = short.get(p.winner, p.winner)
+        matchup = f"{short[g['away']]} @ {short[g['home']]}"
         e = html.escape
         when = f"{g['kickoff_ct']:%a %I:%M %p}"
-        rows.append(
-            html_block(f"<b>{p.confidence} pts &nbsp;{e(p.winner)}</b> ({e(matchup)})", f"{when} · {g['line']}", p.reasoning)
-        )
-        text_rows.append(f"{p.confidence:>3}  {p.winner:<4} {matchup:<11} {when:<13} {g['line']:<10} {p.reasoning}")
+        first, _, rest = g["line"].partition(" ")
+        line = f"{short[first]} {rest}".strip() if first in short else g["line"]  # "BUF -16.5" -> "Bills -16.5"
+        rows.append(html_block(f"<b>{p.confidence} pts &nbsp;{e(winner)}</b> ({e(matchup)})", f"{when} · {line}", p.reasoning))
+        text_rows.append(f"{p.confidence:>3}  {winner:<12} {matchup:<24} {when:<13} {line:<14} {p.reasoning}")
 
     notes_html = "".join(f"<p style='color:#555'>{html.escape(n)}</p>" for n in notes)
     lines = summary_bullets(summary)
